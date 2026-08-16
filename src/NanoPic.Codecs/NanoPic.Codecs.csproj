@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>NanoPic.Codecs</AssemblyName>
+    <RootNamespace>NanoPic.Codecs</RootNamespace>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../NanoPic.Core/NanoPic.Core.csproj" />
+    <Compile Remove="MagickNetCodecEngine.cs" />
+    <Compile Remove="MagickNetImageCodec.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Native\libwebp-1.6.0\cwebp.exe" LogicalName="NanoPic.Codecs.Native.libwebp.cwebp.exe" />
+    <EmbeddedResource Include="Native\libwebp-1.6.0\dwebp.exe" LogicalName="NanoPic.Codecs.Native.libwebp.dwebp.exe" />
+  </ItemGroup>
+</Project>

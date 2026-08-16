@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>NanoPic.Core</AssemblyName>
+    <RootNamespace>NanoPic.Core</RootNamespace>
+  </PropertyGroup>
+</Project>

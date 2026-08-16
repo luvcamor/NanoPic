@@ -1,0 +1,15 @@
+NanoPic 3.0 — Third-Party Notices
+===================================
+
+libwebp 1.6.0
+-------------
+Copyright (c) 2010, Google Inc. All rights reserved.
+License: BSD 3-Clause License.
+Project: https://chromium.googlesource.com/webm/libwebp
+
+NanoPic embeds the official Windows x64 cwebp and dwebp tools. The complete
+license text is distributed as BSD-3-CLAUSE-LIBWEBP.txt with release audit
+materials.
+
+Windows Imaging Component (WIC) and .NET Framework 4.8 are Windows system
+components and are not redistributed in the NanoPic executable.

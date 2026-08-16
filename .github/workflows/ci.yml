@@ -1,0 +1,66 @@
+name: NanoPic CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-publish:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Build, test, and publish net48 single-executable release
+        shell: pwsh
+        run: ./build/Publish-NanoPic.ps1 -Configuration Release -RuntimeIdentifier win-x64
+
+      - name: Verify publish layout and size gate
+        shell: pwsh
+        run: |
+          $required = @(
+            'artifacts/publish/win-x64/NanoPic.exe',
+            'artifacts/publish/win-x64/NanoPic.exe.sha256',
+            'artifacts/publish/win-x64/THIRD-PARTY-NOTICES.txt',
+            'artifacts/publish/win-x64/licenses/BSD-3-CLAUSE-LIBWEBP.txt',
+            'artifacts/publish/win-x64/licenses/README.md',
+            'artifacts/publish/win-x64/SBOM.spdx.json',
+            'artifacts/publish/win-x64/manifest.json'
+          )
+          $missing = $required | Where-Object { -not (Test-Path -LiteralPath $_) }
+          if ($missing) { throw "Missing release assets: $($missing -join ', ')" }
+          $size = (Get-Item -LiteralPath 'artifacts/publish/win-x64/NanoPic.exe').Length
+          if ($size -gt 40000000) { throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes." }
+          $expected = (Get-Content 'artifacts/publish/win-x64/NanoPic.exe.sha256' -Raw).Split(' ')[0]
+          $actual = (Get-FileHash 'artifacts/publish/win-x64/NanoPic.exe' -Algorithm SHA256).Hash
+          if ($actual -ne $expected) { throw 'NanoPic.exe hash does not match NanoPic.exe.sha256.' }
+          $manifest = Get-Content 'artifacts/publish/win-x64/manifest.json' -Raw | ConvertFrom-Json
+          if ($manifest.product.targetFramework -ne 'net48') { throw 'Manifest target framework is not net48.' }
+          if ($manifest.product.selfContained -ne $false) { throw 'Manifest incorrectly declares a self-contained .NET runtime.' }
+          if ($manifest.product.codecBackend -ne 'Windows WIC + libwebp 1.6.0') { throw 'Manifest codec backend is incorrect.' }
+          if ($manifest.primaryArtifact.sizeBytes -ne $size) { throw 'Manifest size does not match NanoPic.exe.' }
+          if ($manifest.primaryArtifact.sha256 -ne $actual) { throw 'Manifest hash does not match NanoPic.exe.' }
+          $sbom = Get-Content 'artifacts/publish/win-x64/SBOM.spdx.json' -Raw | ConvertFrom-Json
+          if ('libwebp' -notin @($sbom.packages.name)) { throw 'SBOM does not contain libwebp.' }
+          $forbidden = @(Get-ChildItem 'artifacts/publish/win-x64' -File | Where-Object {
+            $_.Extension -in @('.dll', '.pdb', '.config') -or $_.Name -match 'Magick|ImageMagick'
+          })
+          if ($forbidden.Count -ne 0) { throw "Forbidden runtime files: $($forbidden.Name -join ', ')" }
+
+      - name: Upload release audit bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: NanoPic-win-x64
+          path: artifacts/publish/win-x64
+          if-no-files-found: error

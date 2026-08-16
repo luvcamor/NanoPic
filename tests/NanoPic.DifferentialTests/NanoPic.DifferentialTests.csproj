@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <AssemblyName>NanoPic.DifferentialTests</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="assets/legacy-jpeg-quality-80.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../assets/legacy-inputs/*" Link="assets/legacy-inputs/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../TestCompatibility.cs" Link="TestCompatibility.cs" />
+    <ProjectReference Include="../../src/NanoPic.Core/NanoPic.Core.csproj" />
+    <ProjectReference Include="../../src/NanoPic.Codecs/NanoPic.Codecs.csproj" />
+    <ProjectReference Include="../../src/NanoPic.Infrastructure/NanoPic.Infrastructure.csproj" />
+    <PackageReference Include="Magick.NET-Q8-x64" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio">
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+</Project>

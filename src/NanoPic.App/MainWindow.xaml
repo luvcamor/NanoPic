@@ -1,0 +1,511 @@
+﻿<Window x:Class="NanoPic.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="NanoPic" Icon="NanoPic.ico"
+        Width="950" Height="600" MinWidth="820" MinHeight="540"
+        WindowStartupLocation="CenterScreen"
+        AllowDrop="True" Drop="Window_Drop" DragOver="Window_DragOver"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        Background="{DynamicResource AppBackgroundBrush}" FontFamily="Microsoft YaHei UI"
+        Foreground="{DynamicResource TextPrimaryBrush}" UseLayoutRounding="True">
+    <Window.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="Themes/NanoPicTheme.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+        <Style x:Key="QueueColumnHeaderStyle" TargetType="DataGridColumnHeader">
+            <Setter Property="Background" Value="{StaticResource SurfaceSubtleBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="SeparatorVisibility" Value="Hidden"/>
+        </Style>
+        <Style x:Key="QueueCenteredHeaderStyle" TargetType="DataGridColumnHeader" BasedOn="{StaticResource QueueColumnHeaderStyle}">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="QueueRowStyle" TargetType="DataGridRow">
+            <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Style.Triggers>
+                <Trigger Property="AlternationIndex" Value="1">
+                    <Setter Property="Background" Value="#FBFCFE"/>
+                </Trigger>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="{StaticResource SurfaceHoverBrush}"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource AccentSoftBrush}"/>
+                    <Setter Property="Foreground" Value="#163B77"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="QueueCellStyle" TargetType="DataGridCell">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderBrush" Value="#EDF1F6"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Padding" Value="14,0"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Style.Triggers>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="Transparent"/>
+                    <Setter Property="BorderBrush" Value="#DCE7F7"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        <Style x:Key="QueueCheckCellStyle" TargetType="DataGridCell" BasedOn="{StaticResource QueueCellStyle}">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="QueueCheckBoxStyle" TargetType="CheckBox">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Height" Value="18"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="CheckBox">
+                        <Grid Width="18" Height="18">
+                            <Border x:Name="CheckBoxSurface" Background="White" BorderBrush="{StaticResource BorderStrongBrush}"
+                                    BorderThickness="1" CornerRadius="4"/>
+                            <Path x:Name="CheckMark" Data="M 4,9 L 7.2,12 L 14,5"
+                                  Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round"
+                                  StrokeEndLineCap="Round" Visibility="Collapsed"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="CheckBoxSurface" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckBoxSurface" Property="Background" Value="{StaticResource AccentBrush}"/>
+                                <Setter TargetName="CheckBoxSurface" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                                <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocused" Value="True">
+                                <Setter TargetName="CheckBoxSurface" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="SettingsGroupCardStyle" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource SurfaceBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="CornerRadius" Value="6"/>
+            <Setter Property="Padding" Value="10,8"/>
+            <Setter Property="Margin" Value="0,0,0,10"/>
+        </Style>
+        <Style x:Key="SettingsGroupTitleStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="SettingsLabelStyle" TargetType="TextBlock">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+        </Style>
+        <Style x:Key="SettingsTabButtonStyle" TargetType="RadioButton">
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="RadioButton">
+                        <Border x:Name="TabSurface" Background="Transparent" BorderBrush="Transparent"
+                                BorderThickness="1" CornerRadius="5" Padding="14,5" Margin="0,0,4,0">
+                            <ContentPresenter x:Name="TabContent" VerticalAlignment="Center" RecognizesAccessKey="True"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="TabSurface" Property="Background" Value="{StaticResource SurfaceHoverBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="TabSurface" Property="BorderBrush" Value="{StaticResource AccentSoftBrush}"/>
+                                <Setter TargetName="TabSurface" Property="Background" Value="{StaticResource AccentSoftBrush}"/>
+                                <Setter Property="Foreground" Value="{StaticResource AccentBrush}"/>
+                                <Setter Property="FontWeight" Value="Bold"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        </ResourceDictionary>
+    </Window.Resources>
+    <Grid Margin="12">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="220"/><ColumnDefinition Width="264"/></Grid.ColumnDefinitions>
+        <Grid Grid.Column="0">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*" MinHeight="120"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+        <Border Background="{StaticResource SurfaceBrush}" CornerRadius="8" BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1" Padding="8" Margin="0,0,0,8">
+            <DockPanel LastChildFill="False">
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
+                    <Button Content="打开输出目录" Style="{StaticResource GhostButton}" Click="OpenOutput_Click" AutomationProperties.Name="打开输出目录"/>
+                    <Button Content="关于" Style="{StaticResource GhostButton}" Click="About_Click" Margin="0" AutomationProperties.Name="关于 NanoPic"/>
+                </StackPanel>
+                <StackPanel x:Name="QueueEditPanel" Orientation="Horizontal" DockPanel.Dock="Left">
+                    <Button Content="添加文件" Style="{StaticResource AccentButton}" Click="AddFiles_Click" ToolTip="添加图片（Ctrl+O）" AutomationProperties.Name="添加图片文件"/>
+                    <Button Content="添加文件夹" Click="AddFolder_Click" ToolTip="添加图片文件夹（Ctrl+Shift+O）" AutomationProperties.Name="添加图片文件夹"/>
+                    <Border Width="1" Height="20" Margin="0,0,12,0"
+                            VerticalAlignment="Center" Background="{StaticResource BorderBrush}"
+                            SnapsToDevicePixels="True" IsHitTestVisible="False"/>
+                    <Button Content="全选" Style="{StaticResource GhostButton}" Click="SelectAll_Click" ToolTip="勾选全部队列项（Ctrl+A）"/>
+                    <Button Content="反选" Style="{StaticResource GhostButton}" Click="InvertSelection_Click" ToolTip="反转勾选状态（Ctrl+I）"/>
+                    <Button Content="移除所选" Style="{StaticResource DangerGhostButton}" Click="RemoveSelected_Click" ToolTip="移除已勾选的队列项"/>
+                    <Button Content="重试失败项" Style="{StaticResource GhostButton}" Click="RetryFailed_Click" ToolTip="重新勾选所有失败项"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+        <Border Grid.Row="1" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}"
+                BorderThickness="1" CornerRadius="8" Padding="1" Margin="0,0,0,8">
+                <Grid>
+                    <DataGrid x:Name="QueueGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserResizeRows="False"
+                              CanUserReorderColumns="False" SelectionMode="Extended" SelectionUnit="FullRow"
+                              HeadersVisibility="Column" ColumnHeaderHeight="38" RowHeight="52" AlternationCount="2"
+                              GridLinesVisibility="None" RowStyle="{StaticResource QueueRowStyle}"
+                              CellStyle="{StaticResource QueueCellStyle}" ColumnHeaderStyle="{StaticResource QueueColumnHeaderStyle}"
+                              MouseDoubleClick="QueueGrid_MouseDoubleClick" Background="{StaticResource SurfaceBrush}" BorderThickness="0"
+                              PreviewMouseRightButtonDown="QueueGrid_PreviewMouseRightButtonDown"
+                              AutomationProperties.Name="图片处理队列" AutomationProperties.HelpText="双击或按 Enter 预览高亮图片；复选框决定是否参与处理。">
+                        <DataGrid.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="预览" InputGestureText="Enter" Click="PreviewHighlighted_Click"/>
+                                <MenuItem Header="打开所在文件夹" Click="OpenContainingFolder_Click"/>
+                                <Separator/>
+                                <MenuItem Header="勾选高亮项" Click="CheckHighlighted_Click"/>
+                                <MenuItem Header="取消勾选高亮项" Click="UncheckHighlighted_Click"/>
+                                <MenuItem Header="重试高亮失败项" Click="RetryHighlighted_Click"/>
+                                <Separator/>
+                                <MenuItem Header="移除高亮项" InputGestureText="Delete" Foreground="#B91C1C" Click="RemoveHighlighted_Click"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridCheckBoxColumn Header="选择" Binding="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"
+                                                    Width="64" HeaderStyle="{StaticResource QueueCenteredHeaderStyle}"
+                                                    CellStyle="{StaticResource QueueCheckCellStyle}"
+                                                    ElementStyle="{StaticResource QueueCheckBoxStyle}"
+                                                    EditingElementStyle="{StaticResource QueueCheckBoxStyle}"/>
+                            <DataGridTemplateColumn Header="文件" Width="3*" SortMemberPath="FileName" IsReadOnly="True">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <StackPanel VerticalAlignment="Center" ToolTip="{Binding Path}">
+                                            <TextBlock Text="{Binding FileName}" FontSize="13" FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextPrimaryBrush}" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock Text="{Binding Directory}" Margin="0,4,0,0" FontSize="11"
+                                                       Foreground="{StaticResource TextSecondaryBrush}" TextTrimming="CharacterEllipsis"/>
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="大小" Width="96" SortMemberPath="Bytes" IsReadOnly="True">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding SizeText}" Foreground="{StaticResource TextSecondaryBrush}" VerticalAlignment="Center"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="状态" Width="2*" SortMemberPath="Status" IsReadOnly="True">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <DockPanel VerticalAlignment="Center">
+                                            <Border x:Name="StatusPill" DockPanel.Dock="Left" VerticalAlignment="Center" Padding="9,4"
+                                                    Background="#F1F5F9" CornerRadius="10">
+                                                <TextBlock x:Name="StatusText" Text="{Binding Status}" FontSize="11"
+                                                           FontWeight="SemiBold" Foreground="#64748B"/>
+                                            </Border>
+                                            <TextBlock x:Name="ErrorText" Text="{Binding Detail}" FontSize="11" Margin="8,0,10,0"
+                                                       VerticalAlignment="Center" Foreground="#B42318" TextTrimming="CharacterEllipsis"
+                                                       ToolTip="{Binding Detail}" Visibility="Collapsed"/>
+                                        </DockPanel>
+                                        <DataTemplate.Triggers>
+                                            <DataTrigger Binding="{Binding Status}" Value="处理中">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#E8F1FF"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#2563EB"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="完成">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#E7F8EF"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#168052"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="完成（已超限）">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#FFF5DB"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#A15C00"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="已跳过">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#F1F5F9"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#64748B"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="已取消">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#FFF5DB"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#A15C00"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="失败">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#FDECEC"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#B42318"/>
+                                                <Setter TargetName="ErrorText" Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
+                                        </DataTemplate.Triggers>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                    <Border x:Name="EmptyState" Background="{StaticResource SurfaceBrush}" Visibility="Visible" IsHitTestVisible="False">
+                        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <Border Width="56" Height="56" Background="{StaticResource AccentSoftBrush}" CornerRadius="16"
+                                    HorizontalAlignment="Center">
+                                <Viewbox Width="28" Height="28">
+                                    <Grid Width="24" Height="24">
+                                        <Path Data="M4,5 L20,5 L20,19 L4,19 Z M5.5,17 L10,12.5 L13.2,15.4 L16.2,11.5 L20,16"
+                                              Stroke="{StaticResource AccentBrush}" StrokeThickness="1.8"
+                                              StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+                                        <Ellipse Width="3.2" Height="3.2" Fill="{StaticResource AccentBrush}"
+                                                 HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,7,6.8,0"/>
+                                    </Grid>
+                                </Viewbox>
+                            </Border>
+                            <TextBlock Text="添加图片开始压缩" Foreground="{StaticResource TextPrimaryBrush}" FontSize="15"
+                                       FontWeight="SemiBold" Margin="0,14,0,0" HorizontalAlignment="Center"/>
+                            <TextBlock Text="拖拽到此处，或点击左上角“添加文件”" Foreground="{StaticResource TextSecondaryBrush}"
+                                       Margin="0,6,0,0" HorizontalAlignment="Center"/>
+                            <TextBlock Text="JPEG · PNG · WebP · GIF · BMP · TIFF · ICO" Foreground="{StaticResource TextSecondaryBrush}"
+                                       FontSize="11" Margin="0,5,0,0" HorizontalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+            <Border Grid.Row="2" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="14,0" Height="90">
+                <Grid VerticalAlignment="Center">
+                    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                    <DockPanel Grid.Row="0" Margin="0,0,0,8">
+                        <Border DockPanel.Dock="Right" Background="#F1F5F9" CornerRadius="10" Padding="9,4">
+                            <TextBlock x:Name="SummaryText" Text="已选 0 / 共 0" Foreground="{StaticResource TextSecondaryBrush}"/>
+                        </Border>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="输出模式:" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <RadioButton x:Name="OverwriteOutput" Content="覆盖原文件" Checked="OutputMode_Changed" Margin="0,0,14,0"/>
+                            <RadioButton x:Name="PreserveOutput" Content="保留文件夹结构" Checked="OutputMode_Changed" Margin="0,0,14,0"/>
+                            <RadioButton x:Name="SeparateOutput" Content="输出到单独文件夹" IsChecked="True" Checked="OutputMode_Changed"/>
+                        </StackPanel>
+                    </DockPanel>
+                    <DockPanel Grid.Row="1">
+                        <TextBlock Text="输出路径:" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <Button DockPanel.Dock="Right" Content="浏览…" Click="BrowseOutput_Click" Margin="8,0,0,0"/>
+                        <TextBox x:Name="OutputDirectoryBox" TextChanged="SettingsChanged" AutomationProperties.Name="输出目录"/>
+                    </DockPanel>
+                </Grid>
+            </Border>
+        </Grid>
+        <Border Grid.Column="1" Background="{StaticResource SurfaceBrush}" CornerRadius="8"
+                BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Margin="8,0,0,0"
+                AutomationProperties.Name="压缩与图像处理设置">
+                <DockPanel>
+                    <Border DockPanel.Dock="Top" Height="47" BorderBrush="{StaticResource BorderBrush}"
+                            BorderThickness="0,0,0,1" Padding="10,0">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <RadioButton x:Name="CompressTabButton" Content="压缩参数" Style="{StaticResource SettingsTabButtonStyle}"
+                                         GroupName="SettingsTab" IsChecked="True" Checked="CompressTab_Checked"
+                                         AutomationProperties.Name="压缩参数页签"/>
+                            <RadioButton x:Name="ImageTabButton" Content="图像处理" Style="{StaticResource SettingsTabButtonStyle}"
+                                         GroupName="SettingsTab" Checked="ImageTab_Checked"
+                                         AutomationProperties.Name="图像处理页签"/>
+                        </StackPanel>
+                    </Border>
+                    <Border DockPanel.Dock="Bottom" Height="90" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="12,10">
+                        <StackPanel>
+                            <ProgressBar x:Name="Progress" Height="8" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" Margin="0,0,0,6"/>
+                            <TextBlock x:Name="ProgressText" Text="" Foreground="{StaticResource TextSecondaryBrush}"
+                                       HorizontalAlignment="Right" Margin="0,0,0,8" AutomationProperties.LiveSetting="Polite" TextTrimming="CharacterEllipsis"/>
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                <Button x:Name="CancelButton" Content="取消" IsEnabled="False" Click="Cancel_Click" ToolTip="取消当前批次（Esc）"/>
+                                <Button x:Name="StartButton" Content="开始压缩" Style="{StaticResource AccentButton}" Click="Start_Click" Margin="0" MinWidth="110"
+                                        ToolTip="处理已勾选文件（F5）" AutomationProperties.Name="开始处理已勾选文件"/>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                        <StackPanel Margin="10">
+                            <StackPanel x:Name="CompressTabPanel">
+                                <Border Style="{StaticResource SettingsGroupCardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="压缩" Style="{StaticResource SettingsGroupTitleStyle}"/>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="输出格式" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <ComboBox x:Name="FormatBox" Grid.Column="1" SelectedIndex="0" SelectionChanged="SettingsChanged">
+                                                <ComboBoxItem Content="JPEG"/><ComboBoxItem Content="PNG"/><ComboBoxItem Content="WebP"/>
+                                                <ComboBoxItem Content="GIF"/><ComboBoxItem Content="BMP"/><ComboBoxItem Content="TIFF"/>
+                                                <ComboBoxItem Content="ICO"/><ComboBoxItem Content="原格式"/>
+                                            </ComboBox>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                            <RadioButton x:Name="QualityMode" Content="按质量" GroupName="CompressMode" IsChecked="True" Checked="SettingsChanged" AutomationProperties.Name="按质量压缩"/>
+                                            <TextBox x:Name="QualityBox" Text="80" Width="52" Margin="6,0,0,0" TextChanged="SettingsChanged"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <RadioButton x:Name="TargetSizeMode" Content="按目标大小" GroupName="CompressMode" Checked="SettingsChanged" AutomationProperties.Name="按目标大小压缩"/>
+                                            <TextBox x:Name="TargetSizeBox" Text="200" Width="52" Margin="4,0,0,0" TextChanged="SettingsChanged"/>
+                                            <ComboBox x:Name="TargetSizeUnitBox" Width="50" Margin="4,0,0,0" SelectedIndex="0" SelectionChanged="SettingsChanged" AutomationProperties.Name="目标大小单位">
+                                                <ComboBoxItem Content="KB"/><ComboBoxItem Content="MB"/>
+                                            </ComboBox>
+                                        </StackPanel>
+                                        <CheckBox x:Name="AllowExceedCheck" Content="允许超出目标大小" Margin="0,6,0,0" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource SettingsGroupCardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="命名" Style="{StaticResource SettingsGroupTitleStyle}"/>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="命名方式" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <ComboBox x:Name="FilenamePresetBox" Grid.Column="1" SelectedIndex="0" SelectionChanged="FilenamePreset_Changed"
+                                                      ToolTip="选择输出文件的命名方式">
+                                                <ComboBoxItem Content="保持原文件名（photo.jpg）"/>
+                                                <ComboBoxItem Content="原文件名 + 序号（photo_1.jpg）"/>
+                                                <ComboBoxItem Content="仅序号（1.jpg）"/>
+                                                <ComboBoxItem Content="日期时间（2024-05-06_07-08-09.jpg）"/>
+                                                <ComboBoxItem Content="自定义…"/>
+                                            </ComboBox>
+                                        </Grid>
+                                        <Grid x:Name="CustomTemplateRow" Margin="0,0,0,6" Visibility="Collapsed">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="自定义" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="FilenameTemplateBox" Grid.Column="1" Text="" TextChanged="SettingsChanged"
+                                                     ToolTip="可用占位符：{name} 原文件名、{index} 序号、{ext} 格式、{date} 日期、{time} 时间；日期时间取文件的修改时间"/>
+                                        </Grid>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="起始序号" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="OutputIndexBox" Grid.Column="1" Width="60" HorizontalAlignment="Left" Text="1" TextChanged="SettingsChanged"/>
+                                        </Grid>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="重复输出" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <ComboBox x:Name="ConflictPolicyBox" Grid.Column="1" SelectedIndex="0" SelectionChanged="SettingsChanged" ToolTip="重复压缩同一文件时如何处理已有输出">
+                                                <ComboBoxItem Content="覆盖"/><ComboBoxItem Content="自动重命名"/><ComboBoxItem Content="跳过"/><ComboBoxItem Content="报错"/>
+                                            </ComboBox>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource SettingsGroupCardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="其他" Style="{StaticResource SettingsGroupTitleStyle}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <TextBlock Text="并发数" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <Slider x:Name="MaxThreadsSlider" Width="108" Margin="8,0,6,0" VerticalAlignment="Center"
+                                                    Minimum="1" Maximum="64" Value="2" TickFrequency="1" IsSnapToTickEnabled="True"
+                                                    SmallChange="1" LargeChange="4" ValueChanged="MaxThreadsSlider_ValueChanged"
+                                                    AutomationProperties.Name="并发数"/>
+                                            <TextBlock x:Name="MaxThreadsValueText" Text="2" Style="{StaticResource SettingsLabelStyle}"
+                                                       Foreground="{StaticResource AccentBrush}" FontWeight="Bold" Width="20" TextAlignment="Center"/>
+                                        </StackPanel>
+                                        <CheckBox x:Name="TopMostCheck" Content="窗口置顶" Margin="0,0,0,6" Checked="TopMostChanged" Unchecked="TopMostChanged"/>
+                                        <CheckBox x:Name="GpuCheck" Content="GPU 加速" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                            <StackPanel x:Name="ImageTabPanel" Visibility="Collapsed">
+                                <Border Style="{StaticResource SettingsGroupCardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="图像" Style="{StaticResource SettingsGroupTitleStyle}"/>
+                                        <CheckBox x:Name="AutoOrientCheck" Content="自动摆正照片方向" IsChecked="True" Checked="SettingsChanged" Unchecked="SettingsChanged" Margin="0,0,0,8" ToolTip="手机竖拍的照片按拍摄方向自动转正，避免压缩后在部分软件里躺倒显示"/>
+                                        <CheckBox x:Name="ResizeCheck" Content="缩放到指定尺寸" Checked="SettingsChanged" Unchecked="SettingsChanged" Margin="0,0,0,5"/>
+                                        <StackPanel Orientation="Horizontal" Margin="4,0,0,5">
+                                            <TextBox x:Name="WidthBox" Text="1920" Width="52" Padding="4,4" TextChanged="SettingsChanged"/>
+                                            <TextBlock Text="×" Margin="1,0" VerticalAlignment="Center" Foreground="{StaticResource TextSecondaryBrush}"/>
+                                            <TextBox x:Name="HeightBox" Text="1080" Width="52" Padding="4,4" TextChanged="SettingsChanged"/>
+                                            <CheckBox x:Name="PreserveAspectCheck" Content="保持比例" Margin="1,0,0,0" IsChecked="True" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,8">
+                                            <TextBlock Text="亮度 %" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="BrightnessBox" Text="100" Width="52" Margin="6,0,0,0" TextChanged="SettingsChanged"/>
+                                            <CheckBox x:Name="BrightnessCheck" Content="启用" Margin="8,0,0,0" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                        </StackPanel>
+                                        <Grid Margin="0,0,0,8">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="透明背景" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="BackgroundColorBox" Grid.Column="1" Text="#FFFFFF" TextChanged="SettingsChanged"/>
+                                        </Grid>
+                                        <CheckBox x:Name="StripMetadataCheck" Content="移除元数据" Margin="0,0,0,6" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                        <CheckBox x:Name="MetadataNoteCheck" Content="写入备注到图片详细信息" Margin="0,0,0,4" Checked="SettingsChanged" Unchecked="SettingsChanged"
+                                                  ToolTip="将备注写入图片属性，可在资源管理器“详细信息”的标题/主题列看到（JPEG/TIFF/PNG 支持）"/>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="备注" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="MetadataNoteBox" Width="120" Margin="6,0,0,0" TextChanged="SettingsChanged"
+                                                     ToolTip="例如：出处 https://example.com"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource SettingsGroupCardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="水印" Style="{StaticResource SettingsGroupTitleStyle}"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <CheckBox x:Name="WatermarkCheck" Content="文字水印" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                            <TextBox x:Name="WatermarkBox" Width="104" Margin="6,0,0,0" TextChanged="SettingsChanged"/>
+                                        </StackPanel>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="颜色" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <DockPanel Grid.Column="1">
+                                                <Button x:Name="WatermarkColorSwatch" DockPanel.Dock="Left" Width="38" Height="26" Padding="0" Margin="0"
+                                                        Style="{StaticResource ColorSwatchButton}"
+                                                        Click="WatermarkColorSwatch_Click" ToolTip="选择水印颜色" AutomationProperties.Name="水印颜色选择"/>
+                                                <Popup x:Name="WatermarkColorPopup" PlacementTarget="{Binding ElementName=WatermarkColorSwatch}"
+                                                       Placement="Bottom" StaysOpen="False" AllowsTransparency="True">
+                                                    <Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource BorderBrush}"
+                                                            BorderThickness="1" CornerRadius="6" Padding="10">
+                                                        <StackPanel>
+                                                            <UniformGrid x:Name="WatermarkColorPalette" Columns="10"/>
+                                                            <Button Content="更多颜色…" Margin="0,10,0,0" HorizontalAlignment="Stretch"
+                                                                    Click="WatermarkColorMore_Click" AutomationProperties.Name="更多水印颜色"/>
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Popup>
+                                                <TextBox x:Name="WatermarkColorBox" Text="#000000" Margin="6,0,0,0" TextChanged="SettingsChanged"/>
+                                            </DockPanel>
+                                        </Grid>
+                                        <Grid Margin="0,0,0,6">
+                                            <Grid.ColumnDefinitions><ColumnDefinition Width="56"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                            <TextBlock Text="位置" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <ComboBox x:Name="WatermarkPositionBox" Grid.Column="1" SelectedIndex="0" SelectionChanged="SettingsChanged" AutomationProperties.Name="水印位置">
+                                                <ComboBoxItem Content="右下角"/><ComboBoxItem Content="左下角"/><ComboBoxItem Content="右上角"/><ComboBoxItem Content="左上角"/><ComboBoxItem Content="居中"/><ComboBoxItem Content="随机"/>
+                                            </ComboBox>
+                                        </Grid>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <TextBlock Text="透明度 %" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="WatermarkOpacityBox" Text="100" Width="56" Margin="4,0,0,0" TextChanged="SettingsChanged"/>
+                                            <TextBlock Text="字号" Style="{StaticResource SettingsLabelStyle}" Margin="8,0,0,0"/>
+                                            <TextBox x:Name="WatermarkFontSizeBox" Text="24" Width="44" Margin="6,0,0,0" TextChanged="SettingsChanged"/>
+                                        </StackPanel>
+                                        <StackPanel Orientation="Horizontal">
+                                            <TextBlock Text="边距" Style="{StaticResource SettingsLabelStyle}"/>
+                                            <TextBox x:Name="WatermarkMarginBox" Text="16" Width="48" Margin="6,0,0,0" TextChanged="SettingsChanged"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </StackPanel>
+                    </ScrollViewer>
+                </DockPanel>
+            </Border>
+    </Grid>
+</Window>

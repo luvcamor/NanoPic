@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>NanoPic.Infrastructure</AssemblyName>
+    <RootNamespace>NanoPic.Infrastructure</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../NanoPic.Core/NanoPic.Core.csproj" />
+    <PackageReference Include="System.Text.Json" />
+  </ItemGroup>
+</Project>

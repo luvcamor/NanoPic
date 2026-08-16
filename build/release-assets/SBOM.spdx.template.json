@@ -1,0 +1,40 @@
+﻿{
+  "spdxVersion": "SPDX-2.3",
+  "dataLicense": "CC0-1.0",
+  "SPDXID": "SPDXRef-DOCUMENT",
+  "name": "NanoPic-VERSION-win-x64",
+  "documentNamespace": "https://github.com/luvcamor/NanoPic/sbom/VERSION/win-x64",
+  "creationInfo": {
+    "created": "2026-08-15T00:00:00Z",
+    "creators": ["Tool: NanoPic Publish-NanoPic.ps1", "Organization: NanoPic"],
+    "licenseListVersion": "3.25"
+  },
+  "documentDescribes": ["SPDXRef-Package-NanoPic"],
+  "packages": [
+    {
+      "name": "NanoPic",
+      "SPDXID": "SPDXRef-Package-NanoPic",
+      "versionInfo": "VERSION",
+      "downloadLocation": "NOASSERTION",
+      "filesAnalyzed": false,
+      "licenseConcluded": "NOASSERTION",
+      "licenseDeclared": "NOASSERTION",
+      "copyrightText": "Copyright (c) NanoPic contributors",
+      "primaryPackagePurpose": "APPLICATION"
+    },
+    {
+      "name": "libwebp",
+      "SPDXID": "SPDXRef-Package-libwebp",
+      "versionInfo": "1.6.0",
+      "downloadLocation": "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0-windows-x64.zip",
+      "filesAnalyzed": false,
+      "licenseConcluded": "BSD-3-Clause",
+      "licenseDeclared": "BSD-3-Clause",
+      "copyrightText": "Copyright (c) 2010, Google Inc.",
+      "primaryPackagePurpose": "LIBRARY"
+    }
+  ],
+  "relationships": [
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-libwebp"}
+  ]
+}
