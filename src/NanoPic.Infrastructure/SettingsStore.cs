@@ -16,10 +16,11 @@ public sealed record NanoPicSettings(
 
     public ProcessingSettings Processing { get; init; } = ProcessingSettings.Default;
     public MetadataNoteSettings MetadataNote { get; init; } = MetadataNoteSettings.Default;
+    public OversizedImageSettings OversizedImage { get; init; } = OversizedImageSettings.Default;
 
     public static NanoPicSettings Default { get; } = new(
         CurrentSchemaVersion,
-        new SystemSettings(2, TopMost: false, UseGpu: false),
+        new SystemSettings(2, TopMost: false, UseGpu: false, AutoDownscaleOnExceed: true),
         new WatermarkSettings(false, string.Empty, "#000000", 100, "Segoe UI", 24),
         new ResizeSettings(false, 1920, 1080, PreserveAspectRatio: true),
         new GraphSettings("#FFFFFF", 100),
@@ -27,7 +28,7 @@ public sealed record NanoPicSettings(
         new UiSettings(string.Empty));
 }
 
-public sealed record SystemSettings(int MaxThreads, bool TopMost, bool UseGpu);
+public sealed record SystemSettings(int MaxThreads, bool TopMost, bool UseGpu, bool AutoDownscaleOnExceed = true);
 public sealed record WatermarkSettings(bool Enabled, string Text, string ColorHex, int OpacityPercent, string FontFamily, int FontSize)
 {
     public int Margin { get; init; } = 16;
@@ -280,6 +281,8 @@ public static class SettingsValidator
             settings.Resize.Width is < 1 or > 32_768 || settings.Resize.Height is < 1 or > 32_768 ||
             settings.Graph.BrightnessPercent is < 0 or > 200 || settings.Watermark.OpacityPercent is < 0 or > 100 ||
             settings.Watermark.FontSize is < 4 or > 256 || settings.Watermark.Margin is < 0 or > 4096 ||
+            settings.OversizedImage.SoftMaxPixels < OversizedImageSettings.MinSoftMaxPixels ||
+            settings.OversizedImage.SoftMaxPixels > OversizedImageSettings.MaxSoftMaxPixels ||
             !Enum.IsDefined(typeof(OutputConflictPolicy), settings.Compress.ConflictPolicy) ||
             !IsRgbHex(settings.Graph.BackgroundColorHex) || !IsRgbHex(settings.Watermark.ColorHex) ||
             string.IsNullOrWhiteSpace(settings.Compress.OutputFilenameTemplate) ||
@@ -322,7 +325,7 @@ public static class LegacySettingsMapper
         var defaults = NanoPicSettings.Default;
         return defaults with
         {
-            System = new SystemSettings(legacy.System?.MaxThreads ?? defaults.System.MaxThreads, legacy.System?.TopMost ?? false, legacy.System?.UseGpu ?? false),
+            System = new SystemSettings(legacy.System?.MaxThreads ?? defaults.System.MaxThreads, legacy.System?.TopMost ?? false, legacy.System?.UseGpu ?? false, AutoDownscaleOnExceed: true),
             Watermark = new WatermarkSettings(
                 (legacy.Watermark?.WatermarkType ?? 0) != 0,
                 legacy.Watermark?.WatermarkText ?? string.Empty,

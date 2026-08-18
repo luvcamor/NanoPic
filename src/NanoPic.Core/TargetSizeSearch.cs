@@ -76,14 +76,14 @@ public static class TargetSizeSearch
             {
                 return ImageOperationResult<TargetSizeSearchResult>.Failed(
                     ImageFailureKind.TargetSizeUnreachable,
-                    "在允许的质量范围内无法生成目标大小的图像。");
+                    "在允许的质量范围内无法生成目标大小的图像。请尝试降低像素上限、开启缩放、或提高目标大小。");
             }
 
             if (!options.AllowExceed)
             {
                 return ImageOperationResult<TargetSizeSearchResult>.Failed(
                     ImageFailureKind.TargetSizeUnreachable,
-                    "无法在不超过目标大小的前提下生成图像。");
+                    "无法在不超过目标大小的前提下生成图像。请尝试：降低像素上限触发自动缩放、开启手动缩放到较小尺寸、或提高目标大小。");
             }
 
             return ImageOperationResult<TargetSizeSearchResult>.Success(

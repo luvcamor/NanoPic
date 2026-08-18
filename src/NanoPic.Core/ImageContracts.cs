@@ -61,14 +61,23 @@ public sealed record ImageSafetyLimits(
     int MaxWidth,
     int MaxHeight,
     long MaxPixels,
-    int MaxFrames)
+    int MaxFrames,
+    bool AutoDownscaleOnExceed = true,
+    long HardMaxPixels = 500_000_000)
 {
+    /// <summary>
+    /// Default soft limits. The user-facing MaxPixels serves as the soft threshold
+    /// that triggers auto-downscale (when enabled); HardMaxPixels is the absolute
+    /// safety ceiling that always rejects.
+    /// </summary>
     public static ImageSafetyLimits Default { get; } = new(
         MaxSourceBytes: 512L * 1024L * 1024L,
         MaxWidth: 32_768,
         MaxHeight: 32_768,
-        MaxPixels: 100_000_000,
-        MaxFrames: 1_000);
+        MaxPixels: 200_000_000,
+        MaxFrames: 1_000,
+        AutoDownscaleOnExceed: true,
+        HardMaxPixels: 500_000_000);
 }
 
 public sealed record ImageResizeOptions(
@@ -176,6 +185,41 @@ public sealed record ImageOperationResult<T>(T? Value, ImageOperationFailure? Fa
 
     public static ImageOperationResult<T> Failed(ImageFailureKind kind, string userMessage, Exception? exception = null) =>
         new(default, new ImageOperationFailure(kind, userMessage, exception));
+}
+
+/// <summary>
+/// Unified resize plan produced by ImageResizePlanner.
+/// Merges auto-downsample with user resize into a single effective resize.
+/// </summary>
+public sealed record ImageResizePlan(
+    int Width,
+    int Height,
+    bool ResizeRequired,
+    bool AutoDownsampled,
+    string? Notice);
+
+/// <summary>
+/// Per-image concurrency guidance returned by OversizedImageConcurrencyPolicy.
+/// </summary>
+public sealed record OversizedImageConcurrencyLimit(
+    int MaxConcurrentTasks,
+    string? Reason);
+
+/// <summary>
+/// User-configurable oversize image handling. SoftMaxPixels is the pixel
+/// threshold above which auto-downsample (when enabled) kicks in.
+/// HardMaxPixels lives in ImageSafetyLimits and is not user-configurable.
+/// </summary>
+public sealed record OversizedImageSettings(
+    long SoftMaxPixels,
+    bool AutoDownsample)
+{
+    public const long MinSoftMaxPixels = 50_000_000;
+    public const long MaxSoftMaxPixels = 500_000_000;
+
+    public static OversizedImageSettings Default { get; } = new(
+        SoftMaxPixels: 200_000_000,
+        AutoDownsample: true);
 }
 
 public interface IImageCodec

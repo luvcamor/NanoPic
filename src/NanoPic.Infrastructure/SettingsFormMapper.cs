@@ -1,4 +1,4 @@
-﻿using NanoPic.Core;
+using NanoPic.Core;
 
 namespace NanoPic.Infrastructure;
 
@@ -33,7 +33,9 @@ public sealed record SettingsFormState(
     string OutputDirectory,
     int WatermarkPositionIndex = 0,
     bool MetadataNoteEnabled = false,
-    string MetadataNoteText = "");
+    string MetadataNoteText = "",
+    bool AutoDownscaleOnExceed = true,
+    string SoftMaxPixels = "200");
 
 public static class SettingsFormMapper
 {
@@ -91,7 +93,9 @@ public static class SettingsFormMapper
         settings.Ui.OutputDirectory,
         (int)settings.Watermark.Position,
         settings.MetadataNote.Enabled,
-        settings.MetadataNote.Text);
+        settings.MetadataNote.Text,
+        settings.System.AutoDownscaleOnExceed,
+        (settings.OversizedImage.SoftMaxPixels / 1_000_000).ToString());
     }
 
     public static NanoPicSettings Capture(NanoPicSettings basis, SettingsFormState form)
@@ -110,10 +114,14 @@ public static class SettingsFormMapper
         var watermarkMargin = ParseOrDefault(form.WatermarkMargin, basis.Watermark.Margin);
         var outputIndex = ParseOrDefault(form.OutputIndex, basis.Compress.OutputIndex);
         var maxThreads = ParseOrDefault(form.MaxThreads, basis.System.MaxThreads);
+        var softMaxPixels = ParseLongOrDefault(form.SoftMaxPixels, basis.OversizedImage.SoftMaxPixels / 1_000_000) * 1_000_000L;
 
         return basis with
         {
-            System = basis.System with { MaxThreads = maxThreads, UseGpu = form.UseGpu, TopMost = form.TopMost },
+            System = basis.System with { MaxThreads = maxThreads, UseGpu = form.UseGpu, TopMost = form.TopMost, AutoDownscaleOnExceed = form.AutoDownscaleOnExceed },
+            OversizedImage = new OversizedImageSettings(
+                SoftMaxPixels: Math.Max(OversizedImageSettings.MinSoftMaxPixels, Math.Min(OversizedImageSettings.MaxSoftMaxPixels, softMaxPixels)),
+                AutoDownsample: form.AutoDownscaleOnExceed),
             Compress = basis.Compress with
             {
                 OutputFormat = form.OutputFormatIndex switch

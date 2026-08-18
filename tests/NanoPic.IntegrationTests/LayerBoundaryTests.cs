@@ -358,4 +358,124 @@ public sealed class LayerBoundaryTests
             directory.Delete(recursive: true);
         }
     }
+
+    [Fact]
+    public async Task Target_size_adaptive_downscale_succeeds_on_large_image()
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-Integration-");
+        try
+        {
+            var sourcePath = Path.Combine(directory.FullName, "large.bmp");
+            var destinationPath = Path.Combine(directory.FullName, "adaptive.jpg");
+
+            // Generate a 2000×2000 white BMP (~12 MB uncompressed) — large enough
+            // that the WIC adaptive-downscale path kicks in for a tiny target.
+            WriteWhiteBmp(sourcePath, 2000, 2000);
+
+            var service = new ImageFileProcessingService(new WicImageCodec());
+            var result = await service.ProcessAsync(
+                new ImageFileProcessRequest(
+                    sourcePath,
+                    destinationPath,
+                    new ImageEncodingOptions(
+                        ImageOutputFormat.Jpeg,
+                        Quality: 80,
+                        TargetSize: new TargetSizeOptions(TargetBytes: 1024, AllowExceed: false)),
+                    new ImageTransformOptions(),
+                    ImageSafetyLimits.Default),
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.Failure?.UserMessage ?? "TargetSize adaptive downscale should succeed");
+            Assert.NotNull(result.Value);
+            Assert.NotNull(result.Value.Output);
+            Assert.True(result.Value.Output.TargetSizeReached);
+            Assert.True(result.Value.Output.Bytes <= 1024,
+                $"Expected <= 1024 bytes, got {result.Value.Output.Bytes}");
+            Assert.True(File.Exists(destinationPath));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    private static void WriteWhiteBmp(string path, int width, int height)
+    {
+        var rowStride = (width * 3 + 3) & ~3;
+        var pixelDataSize = rowStride * height;
+        var fileSize = 14 + 40 + pixelDataSize;
+
+        using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        var writer = new BinaryWriter(stream);
+
+        // BITMAPFILEHEADER
+        writer.Write((byte)'B');
+        writer.Write((byte)'M');
+        writer.Write((int)fileSize);
+        writer.Write((short)0); // reserved
+        writer.Write((short)0); // reserved
+        writer.Write(14 + 40); // offset to pixel data
+
+        // BITMAPINFOHEADER
+        writer.Write(40); // biSize
+        writer.Write(width);
+        writer.Write(height);
+        writer.Write((short)1); // planes
+        writer.Write((short)24); // bpp
+        writer.Write(0); // compression (BI_RGB)
+        writer.Write(pixelDataSize);
+        writer.Write(0); // xPelsPerMeter
+        writer.Write(0); // yPelsPerMeter
+        writer.Write(0); // clrUsed
+        writer.Write(0); // clrImportant
+
+        // White pixel data (BGR, bottom-up)
+        var row = new byte[rowStride];
+        for (var i = 0; i < rowStride; i += 3)
+        {
+            row[i] = 255;     // B
+            row[i + 1] = 255; // G
+            row[i + 2] = 255; // R
+        }
+
+        for (var y = 0; y < height; y++)
+        {
+            writer.Write(row);
+        }
+
+        writer.Flush();
+    }
+
+    [Fact]
+    public async Task Target_size_adaptive_downscale_eventually_fails_when_impossible()
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-Integration-");
+        try
+        {
+            var sourcePath = Path.Combine(directory.FullName, "small.png");
+            var destinationPath = Path.Combine(directory.FullName, "tiny.jpg");
+            File.Copy(Path.Combine(AppContext.BaseDirectory, "assets", "transparent.png"), sourcePath);
+
+            var service = new ImageFileProcessingService(new WicImageCodec());
+            var result = await service.ProcessAsync(
+                new ImageFileProcessRequest(
+                    sourcePath,
+                    destinationPath,
+                    new ImageEncodingOptions(
+                        ImageOutputFormat.Jpeg,
+                        Quality: 80,
+                        TargetSize: new TargetSizeOptions(TargetBytes: 1, AllowExceed: false)),
+                    new ImageTransformOptions(Background: new ImageBackgroundOptions(true, "#FFFFFFFF")),
+                    ImageSafetyLimits.Default),
+                CancellationToken.None);
+
+            Assert.False(result.IsSuccess);
+            Assert.Equal(ImageFailureKind.TargetSizeUnreachable, result.Failure?.Kind);
+            Assert.False(File.Exists(destinationPath));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
 }

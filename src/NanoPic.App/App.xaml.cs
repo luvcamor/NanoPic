@@ -21,7 +21,9 @@ public partial class App : System.Windows.Application
             return;
         }
 
-        new MainWindow().Show();
+        var window = new MainWindow();
+        MainWindow = window;
+        window.Show();
     }
 
     private async void HandleDispatcherUnhandledException(object sender, System.Windows.Threading.DispatcherUnhandledExceptionEventArgs e)

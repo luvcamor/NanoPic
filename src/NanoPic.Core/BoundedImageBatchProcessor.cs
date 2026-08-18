@@ -9,9 +9,30 @@ public sealed class BoundedImageBatchProcessor
         _processingService = processingService ?? throw new ArgumentNullException(nameof(processingService));
     }
 
+    /// <summary>
+    /// Process a batch with the given maximum concurrency. No pixel-count-based
+    /// limiting is applied; the full <paramref name="maxDegreeOfParallelism"/>
+    /// is used.
+    /// </summary>
+    public Task<ImageBatchResult> ProcessAsync(
+        IReadOnlyList<ImageFileProcessRequest> requests,
+        int maxDegreeOfParallelism,
+        IProgress<ImageBatchProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        return ProcessAsync(requests, maxDegreeOfParallelism, imagePixelCounts: null, progress, cancellationToken);
+    }
+
+    /// <summary>
+    /// Process a batch with concurrency capped by both
+    /// <paramref name="maxDegreeOfParallelism"/> (user ceiling) and,
+    /// when <paramref name="imagePixelCounts"/> is provided, by the
+    /// most restrictive oversized-image limit in the batch.
+    /// </summary>
     public async Task<ImageBatchResult> ProcessAsync(
         IReadOnlyList<ImageFileProcessRequest> requests,
         int maxDegreeOfParallelism,
+        IReadOnlyList<long>? imagePixelCounts,
         IProgress<ImageBatchProgress>? progress,
         CancellationToken cancellationToken)
     {
@@ -28,13 +49,23 @@ public sealed class BoundedImageBatchProcessor
             return new ImageBatchResult(Array.Empty<ImageOperationResult<ImageFileProcessResult>>(), emptyProgress);
         }
 
+        var effectiveConcurrency = maxDegreeOfParallelism;
+        var concurrencyReason = (string?)null;
+        if (imagePixelCounts is { Count: > 0 })
+        {
+            var limit = OversizedImageConcurrencyPolicy.EffectiveConcurrency(
+                imagePixelCounts, maxDegreeOfParallelism);
+            effectiveConcurrency = limit.MaxConcurrentTasks;
+            concurrencyReason = limit.Reason;
+        }
+
         var results = new ImageOperationResult<ImageFileProcessResult>[requests.Count];
         var nextIndex = -1;
         var completed = 0;
         var succeeded = 0;
         var failed = 0;
         var canceled = 0;
-        var workerCount = Math.Min(maxDegreeOfParallelism, requests.Count);
+        var workerCount = Math.Min(effectiveConcurrency, requests.Count);
         var workers = Enumerable.Range(0, workerCount)
             .Select(_ => RunWorkerAsync())
             .ToArray();

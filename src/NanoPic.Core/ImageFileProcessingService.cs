@@ -33,6 +33,7 @@ public sealed class ImageFileProcessingService
             cancellationToken.ThrowIfCancellationRequested();
             ImageFormat detectedFormat;
             ImageMetadata sourceMetadata;
+            SafetyValidationResult safetyResult;
             using (var source = new FileStream(
                 PortablePath.ForFileSystem(request.SourcePath),
                 FileMode.Open,
@@ -62,10 +63,10 @@ public sealed class ImageFileProcessingService
                 return new ImageOperationResult<ImageFileProcessResult>(default, identified.Failure);
             }
 
-            var safetyFailure = ImageSafetyValidator.Validate(identified.Value, request.SafetyLimits);
-            if (safetyFailure is not null)
+            safetyResult = ImageSafetyValidator.ValidateWithAction(identified.Value, request.SafetyLimits);
+            if (safetyResult.Action == SafetyAction.Reject)
             {
-                return new ImageOperationResult<ImageFileProcessResult>(default, safetyFailure);
+                return new ImageOperationResult<ImageFileProcessResult>(default, safetyResult.Failure);
             }
 
                 detectedFormat = detected.Value;
@@ -128,12 +129,32 @@ public sealed class ImageFileProcessingService
                 }
 
                 temporaryPath = CreateTemporaryPath(destination.Value.Path);
+                var effectiveTransform = request.Transform;
+                var resizePlan = ImageResizePlanner.Plan(
+                    sourceMetadata.Width,
+                    sourceMetadata.Height,
+                    safetyResult,
+                    request.Transform.Resize);
+
+                if (resizePlan.ResizeRequired)
+                {
+                    var preserveAspectRatio = request.Transform.Resize?.PreserveAspectRatio ?? true;
+                    effectiveTransform = effectiveTransform with
+                    {
+                        Resize = new ImageResizeOptions(
+                            Enabled: true,
+                            Width: resizePlan.Width,
+                            Height: resizePlan.Height,
+                            PreserveAspectRatio: preserveAspectRatio)
+                    };
+                }
+
                 var encodeRequest = new ImageEncodeRequest(
                     PortablePath.ForFileSystem(request.SourcePath),
                     PortablePath.ForFileSystem(temporaryPath),
                     detectedFormat,
                     outputFormat,
-                    request.Transform,
+                    effectiveTransform,
                     request.Encoding with { OutputFormat = ToOutputFormat(outputFormat) },
                     request.SafetyLimits);
 

@@ -1,4 +1,4 @@
-﻿<Window x:Class="NanoPic.App.MainWindow"
+<Window x:Class="NanoPic.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="NanoPic" Icon="NanoPic.ico"
@@ -419,7 +419,18 @@
                                                        Foreground="{StaticResource AccentBrush}" FontWeight="Bold" Width="20" TextAlignment="Center"/>
                                         </StackPanel>
                                         <CheckBox x:Name="TopMostCheck" Content="窗口置顶" Margin="0,0,0,6" Checked="TopMostChanged" Unchecked="TopMostChanged"/>
-                                        <CheckBox x:Name="GpuCheck" Content="GPU 加速" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                        <CheckBox x:Name="GpuCheck" Content="GPU 加速" Margin="0,0,0,6" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <TextBlock Text="像素上限" Style="{StaticResource SettingsLabelStyle}" ToolTip="超过此像素总数的图片将自动等比缩小（需开启下方自动降采样）"/>
+                                            <ComboBox x:Name="SoftMaxPixelsBox" Width="80" Margin="8,0,0,0" SelectedIndex="2" SelectionChanged="SettingsChanged" AutomationProperties.Name="超大图片像素上限">
+                                                <ComboBoxItem Content="50 MP" Tag="50"/>
+                                                <ComboBoxItem Content="100 MP" Tag="100"/>
+                                                <ComboBoxItem Content="200 MP" Tag="200"/>
+                                                <ComboBoxItem Content="300 MP" Tag="300"/>
+                                                <ComboBoxItem Content="500 MP" Tag="500"/>
+                                            </ComboBox>
+                                        </StackPanel>
+                                        <CheckBox x:Name="AutoDownscaleCheck" Content="超限自动降采样" IsChecked="True" Checked="SettingsChanged" Unchecked="SettingsChanged" ToolTip="当图像像素总数超过上方设置的上限时，自动按比例缩小处理，避免报错中断"/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

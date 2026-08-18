@@ -502,4 +502,84 @@ public sealed class InfrastructureTests
         Assert.Equal("出处：https://example.com", captured.MetadataNote.Text);
         Assert.Equal("出处：https://example.com", ImageProcessingOptionsMapper.FromSettings(captured).Transform.MetadataNote?.Text);
     }
+
+    [Fact]
+    public void Oversized_image_settings_round_trips_through_the_form()
+    {
+        var settings = NanoPicSettings.Default with
+        {
+            OversizedImage = new OversizedImageSettings(SoftMaxPixels: 300_000_000, AutoDownsample: true),
+            System = NanoPicSettings.Default.System with { AutoDownscaleOnExceed = true }
+        };
+
+        var form = SettingsFormMapper.ToForm(settings);
+        Assert.Equal("300", form.SoftMaxPixels);
+        Assert.True(form.AutoDownscaleOnExceed);
+
+        var captured = SettingsFormMapper.Capture(settings, form);
+        Assert.Equal(300_000_000, captured.OversizedImage.SoftMaxPixels);
+        Assert.True(captured.OversizedImage.AutoDownsample);
+    }
+
+    [Fact]
+    public void Oversized_image_settings_round_trips_with_auto_downscale_off()
+    {
+        var settings = NanoPicSettings.Default with
+        {
+            OversizedImage = new OversizedImageSettings(SoftMaxPixels: 100_000_000, AutoDownsample: false),
+            System = NanoPicSettings.Default.System with { AutoDownscaleOnExceed = false }
+        };
+
+        var form = SettingsFormMapper.ToForm(settings);
+        Assert.Equal("100", form.SoftMaxPixels);
+        Assert.False(form.AutoDownscaleOnExceed);
+
+        var captured = SettingsFormMapper.Capture(settings, form);
+        Assert.Equal(100_000_000, captured.OversizedImage.SoftMaxPixels);
+        Assert.False(captured.OversizedImage.AutoDownsample);
+    }
+
+    [Fact]
+    public void Settings_validator_rejects_soft_max_pixels_below_minimum()
+    {
+        var settings = NanoPicSettings.Default with
+        {
+            OversizedImage = new OversizedImageSettings(
+                SoftMaxPixels: OversizedImageSettings.MinSoftMaxPixels - 1,
+                AutoDownsample: true)
+        };
+
+        var failure = SettingsValidator.Validate(settings);
+        Assert.NotNull(failure);
+        Assert.Equal(ImageFailureKind.InvalidConfiguration, failure.Kind);
+    }
+
+    [Fact]
+    public void Settings_validator_rejects_soft_max_pixels_above_maximum()
+    {
+        var settings = NanoPicSettings.Default with
+        {
+            OversizedImage = new OversizedImageSettings(
+                SoftMaxPixels: OversizedImageSettings.MaxSoftMaxPixels + 1,
+                AutoDownsample: true)
+        };
+
+        var failure = SettingsValidator.Validate(settings);
+        Assert.NotNull(failure);
+        Assert.Equal(ImageFailureKind.InvalidConfiguration, failure.Kind);
+    }
+
+    [Fact]
+    public void Settings_validator_accepts_valid_soft_max_pixels()
+    {
+        var settings = NanoPicSettings.Default with
+        {
+            OversizedImage = new OversizedImageSettings(
+                SoftMaxPixels: 200_000_000,
+                AutoDownsample: true)
+        };
+
+        var failure = SettingsValidator.Validate(settings);
+        Assert.Null(failure);
+    }
 }

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
@@ -231,7 +231,11 @@ public partial class MainWindow : Window
                 ImageFormat.Png,
                 new ImageTransformOptions(AutoOrient: false),
                 new ImageEncodingOptions(ImageOutputFormat.Png),
-                ImageSafetyLimits.Default);
+                ImageSafetyLimits.Default with
+                {
+                    MaxPixels = _settings.OversizedImage.SoftMaxPixels,
+                    AutoDownscaleOnExceed = _settings.System.AutoDownscaleOnExceed
+                });
             var encoded = await Task.Run(() => _previewCodec.TransformAndEncodeAsync(request, CancellationToken.None))
                 .ConfigureAwait(true);
             if (!encoded.IsSuccess)
@@ -381,7 +385,11 @@ public partial class MainWindow : Window
                 output.Value,
                 encoding,
                 transforms,
-                ImageSafetyLimits.Default,
+                ImageSafetyLimits.Default with
+                {
+                    MaxPixels = effectiveSettings.OversizedImage.SoftMaxPixels,
+                    AutoDownscaleOnExceed = effectiveSettings.System.AutoDownscaleOnExceed
+                },
                 OverwriteOutput.IsChecked.GetValueOrDefault() ? OutputConflictPolicy.Overwrite : effectiveSettings.Compress.ConflictPolicy)));
         }
 
@@ -389,14 +397,23 @@ public partial class MainWindow : Window
         StartButton.IsEnabled = false; CancelButton.IsEnabled = true; QueueEditPanel.IsEnabled = false; Progress.Visibility = Visibility.Visible; Progress.Value = 0;
         try
         {
+            // Pre-scan image metadata to compute oversized-image concurrency limits.
+            var pixelCounts = await PreScanPixelCountsAsync(jobs, _runCancellation.Token);
+            var concurrencyLimit = OversizedImageConcurrencyPolicy.EffectiveConcurrency(
+                pixelCounts, effectiveSettings.System.MaxThreads);
+            var actualConcurrency = concurrencyLimit.MaxConcurrentTasks;
+
             var progress = new Progress<ImageBatchProgress>(value =>
             {
                 Progress.Value = selected.Length == 0 ? 0 : (value.Completed + planningFailures) * 100d / selected.Length;
-                ProgressText.Text = $"成功 {value.Succeeded}，失败 {value.Failed + planningFailures}，取消 {value.Canceled}，并发 {effectiveSettings.System.MaxThreads}";
+                var concurrencyNote = actualConcurrency < effectiveSettings.System.MaxThreads
+                    ? $" · 内存保护" : string.Empty;
+                ProgressText.Text = $"成功 {value.Succeeded}，失败 {value.Failed + planningFailures}，取消 {value.Canceled}，并发 {actualConcurrency}/{effectiveSettings.System.MaxThreads}{concurrencyNote}";
             });
             var batch = await _batchProcessor.ProcessAsync(
                 jobs.Select(job => job.Request).ToArray(),
                 effectiveSettings.System.MaxThreads,
+                pixelCounts,
                 progress,
                 _runCancellation.Token);
 
@@ -455,6 +472,45 @@ public partial class MainWindow : Window
         "NanoPic",
         "logs",
         "NanoPic.log");
+
+    private async Task<IReadOnlyList<long>> PreScanPixelCountsAsync(
+        IReadOnlyList<(QueueItem Item, ImageFileProcessRequest Request)> jobs,
+        CancellationToken cancellationToken)
+    {
+        if (jobs.Count == 0) return Array.Empty<long>();
+
+        var pixelCounts = new long[jobs.Count];
+        for (var i = 0; i < jobs.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                using var stream = new FileStream(
+                    jobs[i].Item.Path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    bufferSize: 65_536,
+                    useAsync: false);
+                var identified = await _previewCodec.IdentifyAsync(stream, cancellationToken).ConfigureAwait(false);
+                if (identified.IsSuccess && identified.Value is not null)
+                {
+                    pixelCounts[i] = (long)identified.Value.Width * identified.Value.Height;
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception)
+            {
+                // If we cannot identify the image, leave the pixel count as 0
+                // (treated as small image for concurrency purposes).
+            }
+        }
+
+        return pixelCounts;
+    }
 
     private ImageOperationResult<string> BuildOutputPath(
         string sourcePath,
@@ -855,6 +911,25 @@ public partial class MainWindow : Window
         OutputDirectoryBox.Text = form.OutputDirectory;
         GpuCheck.IsChecked = form.UseGpu;
         TopMostCheck.IsChecked = form.TopMost;
+        if (AutoDownscaleCheck is not null)
+        {
+            AutoDownscaleCheck.IsChecked = form.AutoDownscaleOnExceed;
+        }
+        if (SoftMaxPixelsBox is not null)
+        {
+            var mpValue = int.TryParse(form.SoftMaxPixels, out var mp) ? mp : 200;
+            for (var i = 0; i < SoftMaxPixelsBox.Items.Count; i++)
+            {
+                if (SoftMaxPixelsBox.Items[i] is ComboBoxItem item &&
+                    item.Tag is string tag &&
+                    int.TryParse(tag, out var tagValue) &&
+                    tagValue == mpValue)
+                {
+                    SoftMaxPixelsBox.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
         Topmost = form.TopMost;
         RefreshSettingsUi();
     }
@@ -890,7 +965,9 @@ public partial class MainWindow : Window
         OutputDirectoryBox.Text,
         WatermarkPositionBox.SelectedIndex,
         MetadataNoteCheck.IsChecked == true,
-        MetadataNoteBox.Text));
+        MetadataNoteBox.Text,
+        AutoDownscaleCheck.IsChecked == true,
+        SoftMaxPixelsBox.SelectedItem is ComboBoxItem selectedItem && selectedItem.Tag is string tag ? tag : "200"));
 }
 
 public sealed class QueueItem : INotifyPropertyChanged
