@@ -32,9 +32,129 @@
       "licenseDeclared": "BSD-3-Clause",
       "copyrightText": "Copyright (c) 2010, Google Inc.",
       "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "Costura.Fody",
+      "SPDXID": "SPDXRef-Package-Costura-Fody",
+      "versionInfo": "6.2.0",
+      "downloadLocation": "https://www.nuget.org/packages/Costura.Fody/6.2.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "NOASSERTION",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "Microsoft.Bcl.AsyncInterfaces",
+      "SPDXID": "SPDXRef-Package-Microsoft-Bcl-AsyncInterfaces",
+      "versionInfo": "8.0.0",
+      "downloadLocation": "https://www.nuget.org/packages/Microsoft.Bcl.AsyncInterfaces/8.0.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Buffers",
+      "SPDXID": "SPDXRef-Package-System-Buffers",
+      "versionInfo": "4.5.1",
+      "downloadLocation": "https://www.nuget.org/packages/System.Buffers/4.5.1",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Memory",
+      "SPDXID": "SPDXRef-Package-System-Memory",
+      "versionInfo": "4.5.5",
+      "downloadLocation": "https://www.nuget.org/packages/System.Memory/4.5.5",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Numerics.Vectors",
+      "SPDXID": "SPDXRef-Package-System-Numerics-Vectors",
+      "versionInfo": "4.5.0",
+      "downloadLocation": "https://www.nuget.org/packages/System.Numerics.Vectors/4.5.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Runtime.CompilerServices.Unsafe",
+      "SPDXID": "SPDXRef-Package-System-Runtime-CompilerServices-Unsafe",
+      "versionInfo": "6.0.0",
+      "downloadLocation": "https://www.nuget.org/packages/System.Runtime.CompilerServices.Unsafe/6.0.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Text.Encodings.Web",
+      "SPDXID": "SPDXRef-Package-System-Text-Encodings-Web",
+      "versionInfo": "8.0.0",
+      "downloadLocation": "https://www.nuget.org/packages/System.Text.Encodings.Web/8.0.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Text.Json",
+      "SPDXID": "SPDXRef-Package-System-Text-Json",
+      "versionInfo": "8.0.5",
+      "downloadLocation": "https://www.nuget.org/packages/System.Text.Json/8.0.5",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.Threading.Tasks.Extensions",
+      "SPDXID": "SPDXRef-Package-System-Threading-Tasks-Extensions",
+      "versionInfo": "4.5.4",
+      "downloadLocation": "https://www.nuget.org/packages/System.Threading.Tasks.Extensions/4.5.4",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
+    },
+    {
+      "name": "System.ValueTuple",
+      "SPDXID": "SPDXRef-Package-System-ValueTuple",
+      "versionInfo": "4.5.0",
+      "downloadLocation": "https://www.nuget.org/packages/System.ValueTuple/4.5.0",
+      "filesAnalyzed": false,
+      "licenseConcluded": "MIT",
+      "licenseDeclared": "MIT",
+      "copyrightText": "Copyright (c) .NET Foundation and Contributors",
+      "primaryPackagePurpose": "LIBRARY"
     }
   ],
   "relationships": [
-    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-libwebp"}
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-libwebp"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-Costura-Fody"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-Microsoft-Bcl-AsyncInterfaces"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Buffers"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Memory"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Numerics-Vectors"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Runtime-CompilerServices-Unsafe"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Text-Encodings-Web"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Text-Json"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-Threading-Tasks-Extensions"},
+    {"spdxElementId": "SPDXRef-Package-NanoPic", "relationshipType": "DEPENDS_ON", "relatedSpdxElement": "SPDXRef-Package-System-ValueTuple"}
   ]
 }

@@ -115,8 +115,10 @@ public static class PngQuantizer
                 exactColors[packed] = 1;
             }
 
-            // 如果已经确认不是少色图且 quality 明显需要量化，可以在超过 2048 种颜色时提前停止精确统计
-            if (exactColors.Count > 2048 && quality < 100)
+            // Indexed8 最多只能无损表达 256 种颜色。发现第 257 种颜色后，
+            // 无论 Quality 为何都停止增长唯一颜色字典，避免照片级大图产生
+            // 与唯一颜色数线性增长的内存占用。
+            if (exactColors.Count > 256)
             {
                 break;
             }
@@ -199,7 +201,7 @@ public static class PngQuantizer
             pixelBuffer,
             totalBytes,
             targetColors,
-            hasTransparentPixel,
+            ref hasTransparentPixel,
             cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -258,7 +260,7 @@ public static class PngQuantizer
         byte[] pixelBuffer,
         int totalBytes,
         int maxColors,
-        bool hasTransparentPixel,
+        ref bool hasTransparentPixel,
         CancellationToken cancellationToken)
     {
         // 5-5-5-4 降采样桶 (A:4-bit, R:5-bit, G:5-bit, B:5-bit = 19-bit index -> 524288 slots)
@@ -272,6 +274,13 @@ public static class PngQuantizer
             var g = pixelBuffer[offset + 1];
             var r = pixelBuffer[offset + 2];
             var a = pixelBuffer[offset + 3];
+
+            if (a < 255)
+            {
+                // 精确颜色扫描会在第 257 种颜色后提前结束，因此完整直方图
+                // 扫描必须继续发现透明与半透明像素。
+                hasTransparentPixel = true;
+            }
 
             if (a < 16)
             {
@@ -437,10 +446,14 @@ public static class PngQuantizer
         {
             Start = start,
             End = end,
-            MinR = 255, MaxR = 0,
-            MinG = 255, MaxG = 0,
-            MinB = 255, MaxB = 0,
-            MinA = 255, MaxA = 0
+            MinR = 255,
+            MaxR = 0,
+            MinG = 255,
+            MaxG = 0,
+            MinB = 255,
+            MaxB = 0,
+            MinA = 255,
+            MaxA = 0
         };
 
         var count = 0;

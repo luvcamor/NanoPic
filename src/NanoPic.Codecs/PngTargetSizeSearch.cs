@@ -36,11 +36,26 @@ public static class PngTargetSizeSearch
         Func<IReadOnlyList<BitmapFrame>, ImageResizeOptions, IReadOnlyList<BitmapFrame>> resizeRunner,
         CancellationToken cancellationToken)
     {
+        if (targetOptions is null) throw new ArgumentNullException(nameof(targetOptions));
+
         if (initialFrames == null || initialFrames.Count == 0)
         {
             return ImageOperationResult<PngTargetSearchResult>.Failed(
                 ImageFailureKind.InvalidConfiguration,
                 "没有可用于搜索目标大小的图像帧。");
+        }
+
+        if (encodeRunner is null) throw new ArgumentNullException(nameof(encodeRunner));
+        if (resizeRunner is null) throw new ArgumentNullException(nameof(resizeRunner));
+
+        if (targetOptions.TargetBytes <= 0 ||
+            targetOptions.MinQuality is < 1 or > 100 ||
+            targetOptions.MaxQuality is < 1 or > 100 ||
+            targetOptions.MinQuality > targetOptions.MaxQuality)
+        {
+            return ImageOperationResult<PngTargetSearchResult>.Failed(
+                ImageFailureKind.InvalidConfiguration,
+                "PNG 目标大小或质量范围无效。");
         }
 
         var currentFrames = initialFrames;
@@ -60,39 +75,29 @@ public static class PngTargetSizeSearch
             var evaluated = new Dictionary<int, long>();
             var candidates = new List<PngTargetCandidate>();
 
-            // 1. 评估预设梯度
-            foreach (var q in InitialCandidateQualities)
+            // 1. 评估预设梯度，并始终包含用户指定的 Min/Max 边界。
+            var initialQualities = new SortedSet<int>(Comparer<int>.Create(
+                (left, right) => right.CompareTo(left)))
             {
-                if (q < targetOptions.MinQuality || q > targetOptions.MaxQuality)
+                targetOptions.MinQuality,
+                targetOptions.MaxQuality
+            };
+            foreach (var quality in InitialCandidateQualities)
+            {
+                if (quality >= targetOptions.MinQuality && quality <= targetOptions.MaxQuality)
                 {
-                    continue;
+                    initialQualities.Add(quality);
                 }
+            }
 
+            foreach (var q in initialQualities)
+            {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (!evaluated.ContainsKey(q))
                 {
                     var bytes = await encodeRunner(currentFrames, temporaryOutputPath, q, cancellationToken).ConfigureAwait(false);
                     evaluated[q] = bytes;
                     candidates.Add(new PngTargetCandidate(q, bytes, q < 100));
-                }
-            }
-
-            if (candidates.Count == 0)
-            {
-                // 若范围外，至少测一次 MinQuality 与 MaxQuality
-                var minQ = Math.Max(1, Math.Min(100, targetOptions.MinQuality));
-                var maxQ = Math.Max(1, Math.Min(100, targetOptions.MaxQuality));
-                if (!evaluated.ContainsKey(maxQ))
-                {
-                    var bytes = await encodeRunner(currentFrames, temporaryOutputPath, maxQ, cancellationToken).ConfigureAwait(false);
-                    evaluated[maxQ] = bytes;
-                    candidates.Add(new PngTargetCandidate(maxQ, bytes, maxQ < 100));
-                }
-                if (!evaluated.ContainsKey(minQ))
-                {
-                    var bytes = await encodeRunner(currentFrames, temporaryOutputPath, minQ, cancellationToken).ConfigureAwait(false);
-                    evaluated[minQ] = bytes;
-                    candidates.Add(new PngTargetCandidate(minQ, bytes, minQ < 100));
                 }
             }
 
@@ -103,28 +108,45 @@ public static class PngTargetSizeSearch
                 // 找出初步满足条件的最高 Quality
                 var bestCandidate = matchingCandidates.OrderByDescending(c => c.Quality).First();
 
-                // 尝试在 bestCandidate.Quality 和更高一层未达标的 Quality 之间做 1-2 步局部细化
+                // 在最佳候选和最近的更高失败候选之间逐级细化，避免一次
+                // 中点采样遗漏更高的可达 Quality。
                 var higherFailing = candidates
                     .Where(c => c.Quality > bestCandidate.Quality && c.Bytes > targetOptions.TargetBytes)
                     .OrderBy(c => c.Quality)
                     .FirstOrDefault();
 
-                if (higherFailing != null && higherFailing.Quality - bestCandidate.Quality > 3)
+                if (higherFailing != null)
                 {
-                    var midQ = (bestCandidate.Quality + higherFailing.Quality) / 2;
-                    if (!evaluated.ContainsKey(midQ))
+                    for (var refinedQuality = higherFailing.Quality - 1;
+                         refinedQuality > bestCandidate.Quality;
+                         refinedQuality--)
                     {
-                        var midBytes = await encodeRunner(currentFrames, temporaryOutputPath, midQ, cancellationToken).ConfigureAwait(false);
-                        evaluated[midQ] = midBytes;
-                        if (midBytes <= targetOptions.TargetBytes)
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (evaluated.ContainsKey(refinedQuality))
                         {
-                            bestCandidate = new PngTargetCandidate(midQ, midBytes, midQ < 100);
+                            continue;
+                        }
+
+                        var refinedBytes = await encodeRunner(
+                            currentFrames,
+                            temporaryOutputPath,
+                            refinedQuality,
+                            cancellationToken).ConfigureAwait(false);
+                        evaluated[refinedQuality] = refinedBytes;
+                        candidates.Add(new PngTargetCandidate(
+                            refinedQuality,
+                            refinedBytes,
+                            refinedQuality < 100));
+                        if (refinedBytes <= targetOptions.TargetBytes)
+                        {
+                            bestCandidate = new PngTargetCandidate(
+                                refinedQuality,
+                                refinedBytes,
+                                refinedQuality < 100);
+                            break;
                         }
                     }
                 }
-
-                // 重新写出选定的最优质量产物
-                await encodeRunner(currentFrames, temporaryOutputPath, bestCandidate.Quality, cancellationToken).ConfigureAwait(false);
 
                 string? notice = null;
                 if (resized)
@@ -152,7 +174,6 @@ public static class PngTargetSizeSearch
                 if (targetOptions.AllowExceed)
                 {
                     // 允许超出：输出原尺寸最小体积候选
-                    await encodeRunner(currentFrames, temporaryOutputPath, smallestCandidate.Quality, cancellationToken).ConfigureAwait(false);
                     return ImageOperationResult<PngTargetSearchResult>.Success(new PngTargetSearchResult(
                         smallestCandidate,
                         TargetReached: false,
@@ -182,7 +203,6 @@ public static class PngTargetSizeSearch
                 // 已经缩至极限无法再缩
                 if (targetOptions.AllowExceed)
                 {
-                    await encodeRunner(currentFrames, temporaryOutputPath, smallestCandidate.Quality, cancellationToken).ConfigureAwait(false);
                     return ImageOperationResult<PngTargetSearchResult>.Success(new PngTargetSearchResult(
                         smallestCandidate,
                         TargetReached: false,

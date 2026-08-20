@@ -143,13 +143,56 @@ public sealed class PngCompressionIntegrationTests
                 OutputConflictPolicy.Overwrite);
 
             var result = await service.ProcessAsync(request, CancellationToken.None);
+            Assert.True(result.IsSuccess, result.Failure?.UserMessage);
+            Assert.NotNull(result.Value);
+            Assert.True(result.Value!.TargetSizeResized);
+            Assert.True(result.Value.Output!.Metadata.Width < 200);
+            Assert.NotNull(result.Value.TargetSizeNotice);
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
 
-            if (result.IsSuccess)
+    [Fact]
+    public async Task Ui_Settings_Mapping_Preserves_NoOp_Png_When_Reencode_Would_Grow()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "nanopic-ui-noop-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var sourcePath = Path.Combine(AppContext.BaseDirectory, "assets", "transparent.png");
+            Assert.True(File.Exists(sourcePath), $"Missing test asset: {sourcePath}");
+            var destinationPath = Path.Combine(tempDir, "ui-output.png");
+            var sourceBytes = new FileInfo(sourcePath).Length;
+            var settings = NanoPicSettings.Default with
             {
-                Assert.True(result.Value!.TargetSizeResized);
-                Assert.True(result.Value!.Output!.Metadata.Width < 200);
-                Assert.NotNull(result.Value!.TargetSizeNotice);
-            }
+                Compress = NanoPicSettings.Default.Compress with
+                {
+                    OutputFormat = ImageOutputFormat.Png,
+                    Quality = 90,
+                    UseTargetSize = false
+                }
+            };
+            var options = ImageProcessingOptionsMapper.FromSettings(settings);
+            Assert.True(options.Transform.Background?.FlattenTransparency);
+
+            var service = new ImageFileProcessingService(new WicImageCodec());
+            var result = await service.ProcessAsync(
+                new ImageFileProcessRequest(
+                    sourcePath,
+                    destinationPath,
+                    options.Encoding,
+                    options.Transform,
+                    ImageSafetyLimits.Default,
+                    OutputConflictPolicy.Overwrite),
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.Failure?.UserMessage);
+            Assert.NotNull(result.Value?.Output);
+            Assert.Equal(sourceBytes, result.Value!.Output!.Bytes);
+            Assert.Equal(File.ReadAllBytes(sourcePath), File.ReadAllBytes(destinationPath));
         }
         finally
         {

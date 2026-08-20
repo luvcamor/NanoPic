@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using System.Windows;
@@ -150,6 +151,25 @@ public sealed class PngQuantizerTests
     }
 
     [Fact]
+    public void Q5b_Quality100_Stops_ExactColor_Tracking_After_257_Colors()
+    {
+        var bitmap = CreateTestBitmap(512, 512, 96, (buf, offset, x, y) =>
+        {
+            var colorId = y * 512 + x;
+            buf[offset] = (byte)(colorId & 0xFF);
+            buf[offset + 1] = (byte)((colorId >> 8) & 0xFF);
+            buf[offset + 2] = (byte)((colorId >> 16) & 0xFF);
+            buf[offset + 3] = 255;
+        });
+
+        var quantized = PngQuantizer.Quantize(bitmap, 100, CancellationToken.None, out var info);
+
+        Assert.False(info.WasLossy);
+        Assert.Equal(257, info.UniqueColorCount);
+        Assert.Equal(PixelFormats.Bgra32, quantized.Format);
+    }
+
+    [Fact]
     public void Q6_TransparentPixels_Preserved()
     {
         // 包含左半纯透明、右半彩色的图像
@@ -187,18 +207,31 @@ public sealed class PngQuantizerTests
     [Fact]
     public void Q7_TranslucentGradient_AlphaPreserved()
     {
-        // 半透明渐变
+        // 半透明渐变，同时让 RGB 随 y 变化以强制进入 >256 色量化路径。
         var bitmap = CreateTestBitmap(32, 32, 96, (buf, offset, x, y) =>
         {
-            buf[offset] = 50;
-            buf[offset + 1] = 100;
-            buf[offset + 2] = 150;
+            buf[offset] = (byte)(y * 8);
+            buf[offset + 1] = (byte)(100 + y * 3);
+            buf[offset + 2] = (byte)(150 - y * 3);
             buf[offset + 3] = (byte)(x * 8); // Alpha 从 0 到 248
         });
 
         var quantized = PngQuantizer.Quantize(bitmap, 80, CancellationToken.None, out var info);
         Assert.NotNull(quantized.Palette);
         Assert.True(quantized.Palette.Colors.Count >= 2);
+
+        var converted = new FormatConvertedBitmap(quantized, PixelFormats.Bgra32, null, 0);
+        var output = new byte[32 * 32 * 4];
+        converted.CopyPixels(output, 32 * 4, 0);
+        Assert.Equal(0, output[3]);
+        Assert.InRange(output[(31 * 4) + 3], 220, 255);
+
+        var distinctAlpha = new HashSet<byte>();
+        for (var x = 0; x < 32; x++)
+        {
+            distinctAlpha.Add(output[(x * 4) + 3]);
+        }
+        Assert.True(distinctAlpha.Count >= 8, $"Expected an alpha gradient, got {distinctAlpha.Count} levels.");
     }
 
     [Fact]
