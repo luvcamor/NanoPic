@@ -1,10 +1,12 @@
 using System;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace NanoPic.Codecs;
 
@@ -32,11 +34,15 @@ internal sealed class LibWebpToolException : Exception
 
 internal static class LibWebpTools
 {
+    public const int DefaultProcessTimeoutSeconds = 120;
     private const string CwebpResource = "NanoPic.Codecs.Native.libwebp.cwebp.exe";
     private const string DwebpResource = "NanoPic.Codecs.Native.libwebp.dwebp.exe";
     private const string CwebpSha256 = "6A2F5CB5DCE71366353AB1D9CAF9C636E039F25703ACFCE1C148EED346F2F72A";
     private const string DwebpSha256 = "17C1488BF84B7834E9AA908BB40AFD0BE2E55D57567D210E96336C56BB6AE993";
     private static readonly object ExtractionLock = new();
+
+    private sealed record CachedFileHash(long Length, DateTime LastWriteUtc, string Hash);
+    private static readonly ConcurrentDictionary<string, CachedFileHash> HashCache = new(StringComparer.OrdinalIgnoreCase);
 
     public static void DecodeToPng(string inputPath, string outputPath, CancellationToken cancellationToken)
     {
@@ -105,7 +111,7 @@ internal static class LibWebpTools
 
     private static void ExtractVerified(string resourceName, string expectedSha256, string destinationPath)
     {
-        if (File.Exists(destinationPath) && string.Equals(Hash(destinationPath), expectedSha256, StringComparison.OrdinalIgnoreCase))
+        if (File.Exists(destinationPath) && VerifyHashCached(destinationPath, expectedSha256))
         {
             return;
         }
@@ -121,7 +127,8 @@ internal static class LibWebpTools
                 output.Flush(flushToDisk: true);
             }
 
-            if (!string.Equals(Hash(temporaryPath), expectedSha256, StringComparison.OrdinalIgnoreCase))
+            var hash = ComputeFileHash(temporaryPath);
+            if (!string.Equals(hash, expectedSha256, StringComparison.OrdinalIgnoreCase))
             {
                 throw new CryptographicException("内嵌 libwebp 文件哈希校验失败。");
             }
@@ -132,6 +139,8 @@ internal static class LibWebpTools
             }
 
             File.Move(temporaryPath, destinationPath);
+            var info = new FileInfo(destinationPath);
+            HashCache[destinationPath] = new CachedFileHash(info.Length, info.LastWriteTimeUtc, hash);
         }
         finally
         {
@@ -139,6 +148,28 @@ internal static class LibWebpTools
             {
                 File.Delete(temporaryPath);
             }
+        }
+    }
+
+    private static bool VerifyHashCached(string path, string expectedSha256)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (HashCache.TryGetValue(path, out var cached) &&
+                cached.Length == info.Length &&
+                cached.LastWriteUtc == info.LastWriteTimeUtc)
+            {
+                return string.Equals(cached.Hash, expectedSha256, StringComparison.OrdinalIgnoreCase);
+            }
+
+            var computed = ComputeFileHash(path);
+            HashCache[path] = new CachedFileHash(info.Length, info.LastWriteTimeUtc, computed);
+            return string.Equals(computed, expectedSha256, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -170,8 +201,12 @@ internal static class LibWebpTools
                 throw new LibWebpToolException(failureMessage);
             }
 
-            var standardOutput = process.StandardOutput.ReadToEndAsync();
-            var standardError = process.StandardError.ReadToEndAsync();
+            var standardOutputTask = process.StandardOutput.ReadToEndAsync();
+            var standardErrorTask = process.StandardError.ReadToEndAsync();
+
+            var timeoutMs = DefaultProcessTimeoutSeconds * 1000;
+            var stopwatch = Stopwatch.StartNew();
+
             while (!process.WaitForExit(100))
             {
                 if (cancellationToken.IsCancellationRequested)
@@ -179,10 +214,16 @@ internal static class LibWebpTools
                     TryKill(process);
                     cancellationToken.ThrowIfCancellationRequested();
                 }
+
+                if (stopwatch.ElapsedMilliseconds > timeoutMs)
+                {
+                    TryKill(process);
+                    throw new LibWebpToolException($"{failureMessage} 处理超时（超过 {DefaultProcessTimeoutSeconds} 秒）。");
+                }
             }
 
-            var output = standardOutput.GetAwaiter().GetResult();
-            var error = standardError.GetAwaiter().GetResult();
+            var output = standardOutputTask.GetAwaiter().GetResult();
+            var error = standardErrorTask.GetAwaiter().GetResult();
             if (process.ExitCode != 0)
             {
                 throw new LibWebpToolException(failureMessage + " " + Sanitize(error));
@@ -203,6 +244,7 @@ internal static class LibWebpTools
             if (!process.HasExited)
             {
                 process.Kill();
+                process.WaitForExit(1000);
             }
         }
         catch (InvalidOperationException)
@@ -213,7 +255,7 @@ internal static class LibWebpTools
         }
     }
 
-    private static string Hash(string path)
+    private static string ComputeFileHash(string path)
     {
         using var stream = File.OpenRead(path);
         using var sha256 = SHA256.Create();

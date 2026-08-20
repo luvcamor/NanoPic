@@ -179,7 +179,7 @@ public sealed class WicImageCodec : IImageCodec
                 {
                     if (request.SourceFormat == ImageFormat.Webp)
                     {
-                        decodedWebpPath = CreateSiblingTemporaryPath(request.TemporaryOutputPath, "decoded", ".png");
+                        decodedWebpPath = CreateTemporaryPath("decoded", ".png");
                         LibWebpTools.DecodeToPng(request.SourcePath, decodedWebpPath, cancellationToken);
                         sourcePath = decodedWebpPath;
                     }
@@ -236,78 +236,78 @@ public sealed class WicImageCodec : IImageCodec
                     var maxAdaptivePasses = 5;
                     TargetSizeSearchResult? successfulSearch = null;
 
+                    var formatSupportsQuality = SupportsQualitySearch(request.OutputFormat);
+
                     for (var pass = 0; pass < maxAdaptivePasses; pass++)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
 
-                        var targetSearch = await TargetSizeSearch.FindAsync(
-                            targetSize,
-                            (quality, token) =>
+                        if (formatSupportsQuality)
+                        {
+                            var targetSearch = await TargetSizeSearch.FindAsync(
+                                targetSize,
+                                (quality, token) =>
+                                {
+                                    token.ThrowIfCancellationRequested();
+                                    Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, quality, token);
+                                    return Task.FromResult(ImageOperationResult<long>.Success(
+                                        new FileInfo(request.TemporaryOutputPath).Length));
+                                },
+                                cancellationToken).ConfigureAwait(false);
+
+                            if (targetSearch.IsSuccess && targetSearch.Value is { TargetReached: true })
                             {
-                                token.ThrowIfCancellationRequested();
-                                Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, quality, token);
-                                return Task.FromResult(ImageOperationResult<long>.Success(
-                                    new FileInfo(request.TemporaryOutputPath).Length));
-                            },
-                            cancellationToken).ConfigureAwait(false);
-
-                        if (targetSearch.IsSuccess && targetSearch.Value is { TargetReached: true })
-                        {
-                            successfulSearch = targetSearch.Value;
-                            break;
-                        }
-
-                        if (targetSearch.IsSuccess && targetSearch.Value is { ExceededTarget: true } && targetSize.AllowExceed)
-                        {
-                            successfulSearch = targetSearch.Value;
-                            break;
-                        }
-
-                        if (!targetSize.AllowExceed && targetSearch.Value is { Selected: { } smallestCandidate } && smallestCandidate.Bytes > targetSize.TargetBytes)
-                        {
-                            var areaRatio = (double)targetSize.TargetBytes / smallestCandidate.Bytes;
-                            var lengthScale = Math.Min(0.92, Math.Sqrt(areaRatio) * 0.95);
-
-                            var currentWidth = outputFrames[0].PixelWidth;
-                            var currentHeight = outputFrames[0].PixelHeight;
-                            var newWidth = Math.Max(16, (int)Math.Floor(currentWidth * lengthScale));
-                            var newHeight = Math.Max(16, (int)Math.Floor(currentHeight * lengthScale));
-
-                            if (newWidth <= 16 || newHeight <= 16 || (newWidth == currentWidth && newHeight == currentHeight))
-                            {
+                                successfulSearch = targetSearch.Value;
                                 break;
                             }
 
-                            var adaptiveResize = new ImageResizeOptions(Enabled: true, Width: newWidth, Height: newHeight, PreserveAspectRatio: true);
-                            var newFrames = new List<BitmapFrame>(outputFrames.Count);
-                            foreach (var frame in outputFrames)
+                            if (targetSearch.IsSuccess && targetSearch.Value is { ExceededTarget: true } && targetSize.AllowExceed)
                             {
-                                var resizedSource = Resize(frame, adaptiveResize);
-                                var newFrame = BitmapFrame.Create(
-                                    resizedSource,
-                                    frame.Thumbnail,
-                                    frame.Metadata as BitmapMetadata,
-                                    frame.ColorContexts);
-                                newFrame.Freeze();
-                                newFrames.Add(newFrame);
+                                successfulSearch = targetSearch.Value;
+                                break;
                             }
 
-                            outputFrames = newFrames;
-                            outputMetadata = CreateMetadata(outputFrames, request.OutputFormat, sourceBytes: 0L);
-                            continue;
-                        }
-
-                        if (!targetSearch.IsSuccess && targetSearch.Failure?.Kind == ImageFailureKind.TargetSizeUnreachable)
-                        {
-                            // Even at quality 1 the output exceeded the target.
-                            // Try one encode at quality 1 to measure, then downscale.
-                            try
+                            if (!targetSize.AllowExceed && targetSearch.Value is { Selected: { } smallestCandidate } && smallestCandidate.Bytes > targetSize.TargetBytes)
                             {
+                                var areaRatio = (double)targetSize.TargetBytes / smallestCandidate.Bytes;
+                                var lengthScale = Math.Min(0.92, Math.Sqrt(areaRatio) * 0.95);
+
+                                var currentWidth = outputFrames[0].PixelWidth;
+                                var currentHeight = outputFrames[0].PixelHeight;
+                                var newWidth = Math.Max(16, (int)Math.Floor(currentWidth * lengthScale));
+                                var newHeight = Math.Max(16, (int)Math.Floor(currentHeight * lengthScale));
+
+                                if (newWidth <= 16 || newHeight <= 16 || (newWidth == currentWidth && newHeight == currentHeight))
+                                {
+                                    break;
+                                }
+
+                                var adaptiveResize = new ImageResizeOptions(Enabled: true, Width: newWidth, Height: newHeight, PreserveAspectRatio: true);
+                                var newFrames = new List<BitmapFrame>(outputFrames.Count);
+                                foreach (var frame in outputFrames)
+                                {
+                                    var resizedSource = Resize(frame, adaptiveResize);
+                                    var newFrame = BitmapFrame.Create(
+                                        resizedSource,
+                                        frame.Thumbnail,
+                                        frame.Metadata as BitmapMetadata,
+                                        frame.ColorContexts);
+                                    newFrame.Freeze();
+                                    newFrames.Add(newFrame);
+                                }
+
+                                outputFrames = newFrames;
+                                outputMetadata = CreateMetadata(outputFrames, request.OutputFormat, sourceBytes: 0L);
+                                continue;
+                            }
+
+                            if (!targetSearch.IsSuccess && targetSearch.Failure?.Kind == ImageFailureKind.TargetSizeUnreachable)
+                            {
+                                // Try one encode at quality 1 to measure, then downscale.
                                 Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, 1, cancellationToken);
                                 var currentBytes = new FileInfo(request.TemporaryOutputPath).Length;
                                 if (currentBytes <= targetSize.TargetBytes)
                                 {
-                                    // Somehow quality 1 fits — use it.
                                     successfulSearch = new TargetSizeSearchResult(
                                         new TargetSizeCandidate(1, currentBytes),
                                         TargetReached: true, ExceededTarget: false,
@@ -346,23 +346,70 @@ public sealed class WicImageCodec : IImageCodec
                                 outputMetadata = CreateMetadata(outputFrames, request.OutputFormat, sourceBytes: 0L);
                                 continue;
                             }
-                            catch (Exception) when (cancellationToken.IsCancellationRequested)
+
+                            if (!targetSearch.IsSuccess)
                             {
-                                throw;
+                                return new ImageOperationResult<ImageEncodedOutput>(default, targetSearch.Failure);
                             }
-                            catch (Exception)
+
+                            successfulSearch = targetSearch.Value;
+                            break;
+                        }
+                        else
+                        {
+                            // 格式不支持 quality（PNG, BMP, GIF, TIFF, ICO），直接编码测量并按尺寸缩放
+                            Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, effectiveQuality, cancellationToken);
+                            var currentBytes = new FileInfo(request.TemporaryOutputPath).Length;
+                            if (currentBytes <= targetSize.TargetBytes)
+                            {
+                                successfulSearch = new TargetSizeSearchResult(
+                                    new TargetSizeCandidate(effectiveQuality, currentBytes),
+                                    TargetReached: true,
+                                    ExceededTarget: false,
+                                    new List<TargetSizeCandidate>());
+                                break;
+                            }
+
+                            if (targetSize.AllowExceed)
+                            {
+                                successfulSearch = new TargetSizeSearchResult(
+                                    new TargetSizeCandidate(effectiveQuality, currentBytes),
+                                    TargetReached: false,
+                                    ExceededTarget: true,
+                                    new List<TargetSizeCandidate>());
+                                break;
+                            }
+
+                            var areaRatio = (double)targetSize.TargetBytes / currentBytes;
+                            var lengthScale = Math.Min(0.92, Math.Sqrt(areaRatio) * 0.95);
+
+                            var currentWidth = outputFrames[0].PixelWidth;
+                            var currentHeight = outputFrames[0].PixelHeight;
+                            var newWidth = Math.Max(16, (int)Math.Floor(currentWidth * lengthScale));
+                            var newHeight = Math.Max(16, (int)Math.Floor(currentHeight * lengthScale));
+
+                            if (newWidth <= 16 || newHeight <= 16 || (newWidth == currentWidth && newHeight == currentHeight))
                             {
                                 break;
                             }
-                        }
 
-                        if (!targetSearch.IsSuccess)
-                        {
-                            return new ImageOperationResult<ImageEncodedOutput>(default, targetSearch.Failure);
-                        }
+                            var adaptiveResize = new ImageResizeOptions(Enabled: true, Width: newWidth, Height: newHeight, PreserveAspectRatio: true);
+                            var newFrames = new List<BitmapFrame>(outputFrames.Count);
+                            foreach (var frame in outputFrames)
+                            {
+                                var resizedSource = Resize(frame, adaptiveResize);
+                                var newFrame = BitmapFrame.Create(
+                                    resizedSource,
+                                    frame.Thumbnail,
+                                    frame.Metadata as BitmapMetadata,
+                                    frame.ColorContexts);
+                                newFrame.Freeze();
+                                newFrames.Add(newFrame);
+                            }
 
-                        successfulSearch = targetSearch.Value;
-                        break;
+                            outputFrames = newFrames;
+                            outputMetadata = CreateMetadata(outputFrames, request.OutputFormat, sourceBytes: 0L);
+                        }
                     }
 
                     if (successfulSearch is null)
@@ -436,6 +483,9 @@ public sealed class WicImageCodec : IImageCodec
         }
     }
 
+    public static bool SupportsQualitySearch(ImageFormat format) =>
+        format is ImageFormat.Jpeg or ImageFormat.Webp;
+
     private static IReadOnlyList<BitmapFrame> PrepareFrames(
         IReadOnlyList<BitmapFrame> sourceFrames,
         ImageFormat sourceFormat,
@@ -493,14 +543,18 @@ public sealed class WicImageCodec : IImageCodec
                 prepared,
                 preserveMetadata && !pixelsChanged ? source.Thumbnail : null,
                 metadata,
-                preserveMetadata ? source.ColorContexts : null);
+                preserveMetadata && !pixelsChanged ? source.ColorContexts : null);
             frame.Freeze();
             result.Add(frame);
         }
 
-        return outputFormat == ImageFormat.Ico
-            ? PngIcoEncoder.CreateFrames(result[0])
-            : result;
+        if (outputFormat == ImageFormat.Ico)
+        {
+            var bestFrame = result.OrderByDescending(f => (long)f.PixelWidth * f.PixelHeight).FirstOrDefault() ?? result[0];
+            return PngIcoEncoder.CreateFrames(bestFrame);
+        }
+
+        return result;
     }
 
     private static BitmapMetadata? ApplyMetadataNote(
@@ -539,9 +593,6 @@ public sealed class WicImageCodec : IImageCodec
                 return pngTarget;
             }
 
-            // The cloned metadata carries the SOURCE container (e.g. a PNG tree written
-            // into a JPEG), and the JPEG encoder drops EXIF branches planted onto such a
-            // tree. Only reuse it when the source was already the same family.
             var nativeSameFamily = outputFormat switch
             {
                 ImageFormat.Jpeg => sourceFormat == ImageFormat.Jpeg,
@@ -557,8 +608,6 @@ public sealed class WicImageCodec : IImageCodec
             }
 
             EnsureQueryBlock(target, ifdPath, ifdName);
-            // 270 (ImageDescription) is what Windows Explorer surfaces as 标题/主题;
-            // 40092 (XPComment) is the legacy comment field kept for older readers.
             target.SetQuery(queryPath, text);
             var descriptionPath = outputFormat == ImageFormat.Jpeg
                 ? "/app1/ifd/{ushort=270}"
@@ -853,6 +902,27 @@ public sealed class WicImageCodec : IImageCodec
             96,
             PixelFormats.Pbgra32);
         rendered.Render(visual);
+
+        var dpiX = source.DpiX > 0 ? source.DpiX : 96;
+        var dpiY = source.DpiY > 0 ? source.DpiY : 96;
+        if (Math.Abs(dpiX - 96) > 0.01 || Math.Abs(dpiY - 96) > 0.01)
+        {
+            var stride = checked(width * 4);
+            var pixelBuffer = new byte[stride * height];
+            rendered.CopyPixels(pixelBuffer, stride, 0);
+            var dpiPreserved = BitmapSource.Create(
+                width,
+                height,
+                dpiX,
+                dpiY,
+                PixelFormats.Pbgra32,
+                null,
+                pixelBuffer,
+                stride);
+            dpiPreserved.Freeze();
+            return dpiPreserved;
+        }
+
         rendered.Freeze();
         return rendered;
     }
@@ -874,6 +944,27 @@ public sealed class WicImageCodec : IImageCodec
             96,
             PixelFormats.Pbgra32);
         rendered.Render(visual);
+
+        var dpiX = source.DpiX > 0 ? source.DpiX : 96;
+        var dpiY = source.DpiY > 0 ? source.DpiY : 96;
+        if (Math.Abs(dpiX - 96) > 0.01 || Math.Abs(dpiY - 96) > 0.01)
+        {
+            var stride = checked(source.PixelWidth * 4);
+            var pixelBuffer = new byte[stride * source.PixelHeight];
+            rendered.CopyPixels(pixelBuffer, stride, 0);
+            var dpiPreserved = BitmapSource.Create(
+                source.PixelWidth,
+                source.PixelHeight,
+                dpiX,
+                dpiY,
+                PixelFormats.Pbgra32,
+                null,
+                pixelBuffer,
+                stride);
+            dpiPreserved.Freeze();
+            return dpiPreserved;
+        }
+
         rendered.Freeze();
         return rendered;
     }
@@ -902,7 +993,7 @@ public sealed class WicImageCodec : IImageCodec
     {
         if (outputFormat == ImageFormat.Webp)
         {
-            var pngPath = CreateSiblingTemporaryPath(outputPath, "webp-source", ".png");
+            var pngPath = CreateTemporaryPath("webp-source", ".png");
             try
             {
                 WriteWic(frames, pngPath, ImageFormat.Png, quality);
@@ -949,10 +1040,11 @@ public sealed class WicImageCodec : IImageCodec
         output.Flush(flushToDisk: true);
     }
 
-    private static string CreateSiblingTemporaryPath(string outputPath, string purpose, string extension)
+    private static string CreateTemporaryPath(string purpose, string extension)
     {
-        var directory = Path.GetDirectoryName(outputPath) ?? throw new InvalidOperationException("输出路径缺少目录。");
-        return Path.Combine(directory, ".nanopic-" + purpose + "-" + Guid.NewGuid().ToString("N") + extension);
+        var tempDir = Path.Combine(Path.GetTempPath(), "NanoPic", "temp");
+        Directory.CreateDirectory(tempDir);
+        return Path.Combine(tempDir, ".nanopic-" + purpose + "-" + Guid.NewGuid().ToString("N") + extension);
     }
 
     private static void DeleteIfExists(string path)
@@ -992,14 +1084,16 @@ public sealed class WicImageCodec : IImageCodec
         ImageFormat format,
         long sourceBytes)
     {
-        var first = frames[0];
+        var bestFrame = frames.OrderByDescending(f => (long)f.PixelWidth * f.PixelHeight).FirstOrDefault() ?? frames[0];
+        var orientation = ReadExifOrientation(bestFrame.Metadata as BitmapMetadata);
         return new CoreImageMetadata(
             format,
-            first.PixelWidth,
-            first.PixelHeight,
+            bestFrame.PixelWidth,
+            bestFrame.PixelHeight,
             frames.Count,
             SupportsAlpha(format) && frames.Any(HasAlpha),
-            sourceBytes);
+            sourceBytes,
+            orientation == 0 ? 1 : (int)orientation);
     }
 
     private static bool HasAlpha(BitmapSource source)

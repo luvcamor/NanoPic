@@ -1,4 +1,9 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 using NanoPic.Core;
 
 namespace NanoPic.Infrastructure;
@@ -185,8 +190,13 @@ public static class OutputNameTemplate
 
 public sealed class RedactingFileLogger
 {
-    private static readonly Regex PathPattern = new("(?i)([a-z]:\\\\|/)[^\\s\\\"']+", RegexOptions.Compiled);
+    // 匹配 Windows 驱动器路径、UNC 路径（\\server\share 或 \\?\）、以及 Unix 绝对路径
+    private static readonly Regex PathPattern = new(
+        @"(?i)(?:\\\\(?:\?|\.)\\[^\s\r\n""'<>|]+|\\\\[a-z0-9_$.-]+\\[^\s\r\n""'<>|]+|[a-z]:\\[^\s\r\n""'<>|]+|/(?:Users|home|tmp|var|etc)/[^\s\r\n""'<>|]+)",
+        RegexOptions.Compiled);
+
     private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private const long MaxLogFileSizeBytes = 10L * 1024L * 1024L;
 
     public RedactingFileLogger(string logPath, bool verbosePaths = false)
     {
@@ -196,6 +206,9 @@ public sealed class RedactingFileLogger
 
     public string LogPath { get; }
     public bool VerbosePaths { get; }
+
+    public static string Redact(string message) =>
+        string.IsNullOrEmpty(message) ? string.Empty : PathPattern.Replace(message, "<path>");
 
     public async Task WriteAsync(string level, string message, Exception? exception, CancellationToken cancellationToken)
     {
@@ -207,10 +220,12 @@ public sealed class RedactingFileLogger
             throw new InvalidOperationException("日志路径必须包含有效目录。");
         }
 
-        var detail = VerbosePaths ? message : PathPattern.Replace(message, "<path>");
+        var detail = VerbosePaths ? message : Redact(message);
         if (exception is not null)
         {
-            detail += VerbosePaths ? Environment.NewLine + exception : $" ({exception.GetType().Name})";
+            detail += VerbosePaths
+                ? Environment.NewLine + exception
+                : $" ({exception.GetType().Name})";
         }
 
         var line = $"{DateTimeOffset.UtcNow:O}\t{level}\t{detail}{Environment.NewLine}";
@@ -219,6 +234,8 @@ public sealed class RedactingFileLogger
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RotateIfNeeded(LogPath);
+
             using (var writer = new StreamWriter(LogPath, append: true, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
             {
                 await writer.WriteAsync(line).ConfigureAwait(false);
@@ -228,6 +245,26 @@ public sealed class RedactingFileLogger
         finally
         {
             _writeLock.Release();
+        }
+    }
+
+    private static void RotateIfNeeded(string path)
+    {
+        try
+        {
+            if (File.Exists(path) && new FileInfo(path).Length > MaxLogFileSizeBytes)
+            {
+                var backupPath = path + ".old";
+                if (File.Exists(backupPath))
+                {
+                    File.Delete(backupPath);
+                }
+                File.Move(path, backupPath);
+            }
+        }
+        catch
+        {
+            // 日志轮转为最佳努力，不阻止正常日志记录
         }
     }
 }

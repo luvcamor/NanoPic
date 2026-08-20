@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
     [string]$RuntimeIdentifier = 'win-x64',
@@ -112,7 +112,7 @@ try {
         product = [ordered]@{
             name = 'NanoPic'
             version = $productVersion
-            assemblyVersion = '3.0.0.0'
+            assemblyVersion = '3.2.1.0'
             targetFramework = 'net48'
             runtimeIdentifier = $RuntimeIdentifier
             platform = 'x64'

@@ -1,11 +1,85 @@
-using System.Collections.Concurrent;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace NanoPic.Core;
 
 public sealed class ImageFileProcessingService
 {
-    private static readonly ConcurrentDictionary<string, SemaphoreSlim> DestinationLocks =
-        new(StringComparer.OrdinalIgnoreCase);
+    private sealed class KeyedLockEntry
+    {
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public int RefCount;
+    }
+
+    private static readonly object LocksGate = new();
+    private static readonly Dictionary<string, KeyedLockEntry> DestinationLocks = new(StringComparer.OrdinalIgnoreCase);
+
+    private static async Task<IDisposable> AcquireDestinationLockAsync(string path, CancellationToken cancellationToken)
+    {
+        var canonicalKey = Path.GetFullPath(PortablePath.ForFileSystem(path));
+        KeyedLockEntry entry;
+        lock (LocksGate)
+        {
+            if (!DestinationLocks.TryGetValue(canonicalKey, out entry!))
+            {
+                entry = new KeyedLockEntry();
+                DestinationLocks[canonicalKey] = entry;
+            }
+            entry.RefCount++;
+        }
+
+        try
+        {
+            await entry.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            lock (LocksGate)
+            {
+                entry.RefCount--;
+                if (entry.RefCount == 0)
+                {
+                    DestinationLocks.Remove(canonicalKey);
+                    entry.Semaphore.Dispose();
+                }
+            }
+            throw;
+        }
+
+        return new Releaser(canonicalKey, entry);
+    }
+
+    private sealed class Releaser : IDisposable
+    {
+        private readonly string _key;
+        private readonly KeyedLockEntry _entry;
+        private bool _disposed;
+
+        public Releaser(string key, KeyedLockEntry entry)
+        {
+            _key = key;
+            _entry = entry;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            _entry.Semaphore.Release();
+            lock (LocksGate)
+            {
+                _entry.RefCount--;
+                if (_entry.RefCount == 0)
+                {
+                    DestinationLocks.Remove(_key);
+                    _entry.Semaphore.Dispose();
+                }
+            }
+        }
+    }
 
     private readonly IImageCodec _codec;
 
@@ -34,6 +108,9 @@ public sealed class ImageFileProcessingService
             ImageFormat detectedFormat;
             ImageMetadata sourceMetadata;
             SafetyValidationResult safetyResult;
+            int plannedWidth;
+            int plannedHeight;
+
             using (var source = new FileStream(
                 PortablePath.ForFileSystem(request.SourcePath),
                 FileMode.Open,
@@ -42,35 +119,81 @@ public sealed class ImageFileProcessingService
                 bufferSize: 65_536,
                 useAsync: false))
             {
+                // 1. 文件大小检查
+                if (source.Length > request.SafetyLimits.MaxSourceBytes)
+                {
+                    return ImageOperationResult<ImageFileProcessResult>.Failed(
+                        ImageFailureKind.PixelBudgetExceeded,
+                        "图像文件大小超过安全处理上限。");
+                }
 
-            var detected = await ImageFileSignatureInspector.DetectAsync(source, cancellationToken).ConfigureAwait(false);
-            if (!detected.IsSuccess)
-            {
-                return new ImageOperationResult<ImageFileProcessResult>(default, detected.Failure);
-            }
+                // 2. 签名检测
+                var detected = await ImageFileSignatureInspector.DetectAsync(source, cancellationToken).ConfigureAwait(false);
+                if (!detected.IsSuccess)
+                {
+                    return new ImageOperationResult<ImageFileProcessResult>(default, detected.Failure);
+                }
 
-            if (!_codec.SupportedFormats.Contains(detected.Value))
-            {
-                return ImageOperationResult<ImageFileProcessResult>.Failed(
-                    ImageFailureKind.UnsupportedFormat,
-                    "图像格式不受当前编解码器支持。");
-            }
-
-            source.Position = 0;
-            var identified = await _codec.IdentifyAsync(source, cancellationToken).ConfigureAwait(false);
-            if (!identified.IsSuccess || identified.Value is null)
-            {
-                return new ImageOperationResult<ImageFileProcessResult>(default, identified.Failure);
-            }
-
-            safetyResult = ImageSafetyValidator.ValidateWithAction(identified.Value, request.SafetyLimits);
-            if (safetyResult.Action == SafetyAction.Reject)
-            {
-                return new ImageOperationResult<ImageFileProcessResult>(default, safetyResult.Failure);
-            }
+                if (!_codec.SupportedFormats.Contains(detected.Value))
+                {
+                    return ImageOperationResult<ImageFileProcessResult>.Failed(
+                        ImageFailureKind.UnsupportedFormat,
+                        "图像格式不受当前编解码器支持。");
+                }
 
                 detectedFormat = detected.Value;
+
+                // 3. 解码前纯头探测（Header Probe）
+                var probeResult = ImageDimensionProbe.Probe(source, detectedFormat);
+                if (probeResult.IsSuccess && probeResult.Value is not null)
+                {
+                    var probeInfo = probeResult.Value;
+                    var preSwap = request.Transform.AutoOrient && probeInfo.ExifOrientation is >= 5 and <= 8;
+                    var prePlannedWidth = preSwap ? probeInfo.Height : probeInfo.Width;
+                    var prePlannedHeight = preSwap ? probeInfo.Width : probeInfo.Height;
+
+                    var preMetadata = new ImageMetadata(
+                        detectedFormat,
+                        prePlannedWidth,
+                        prePlannedHeight,
+                        probeInfo.FrameCount ?? 1,
+                        HasAlpha: false,
+                        SourceBytes: source.Length,
+                        ExifOrientation: probeInfo.ExifOrientation);
+
+                    // 4. 解码前硬/软安全判定
+                    var preSafetyResult = ImageSafetyValidator.ValidateWithAction(preMetadata, request.SafetyLimits);
+                    if (preSafetyResult.Action == SafetyAction.Reject)
+                    {
+                        return new ImageOperationResult<ImageFileProcessResult>(default, preSafetyResult.Failure);
+                    }
+                }
+
+                // 5. 允许继续后，调用底层获取完整 Metadata
+                source.Position = 0;
+                var identified = await _codec.IdentifyAsync(source, cancellationToken).ConfigureAwait(false);
+                if (!identified.IsSuccess || identified.Value is null)
+                {
+                    return new ImageOperationResult<ImageFileProcessResult>(default, identified.Failure);
+                }
+
                 sourceMetadata = identified.Value;
+                var postSwap = request.Transform.AutoOrient && sourceMetadata.ExifOrientation is >= 5 and <= 8;
+                plannedWidth = postSwap ? sourceMetadata.Height : sourceMetadata.Width;
+                plannedHeight = postSwap ? sourceMetadata.Width : sourceMetadata.Height;
+
+                var orientedMetadata = sourceMetadata with
+                {
+                    Width = plannedWidth,
+                    Height = plannedHeight
+                };
+
+                // 6. 解码后二次校验
+                safetyResult = ImageSafetyValidator.ValidateWithAction(orientedMetadata, request.SafetyLimits);
+                if (safetyResult.Action == SafetyAction.Reject)
+                {
+                    return new ImageOperationResult<ImageFileProcessResult>(default, safetyResult.Failure);
+                }
             }
 
             var outputFormat = ImageFileSignatureInspector.ToImageFormat(request.Encoding.OutputFormat, detectedFormat);
@@ -100,12 +223,12 @@ public sealed class ImageFileProcessingService
                         sourceMetadata,
                         Output: null,
                         ReplacedExistingOutput: false,
-                        SkippedExistingOutput: true));
+                        SkippedExistingOutput: true,
+                        AutoDownsampled: false,
+                        ResizeNotice: null));
             }
 
-            var destinationGate = DestinationLocks.GetOrAdd(destination.Value.Path, _ => new SemaphoreSlim(1, 1));
-            await destinationGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-            try
+            using (await AcquireDestinationLockAsync(destination.Value.Path, cancellationToken).ConfigureAwait(false))
             {
                 destination = await PrepareDestinationAsync(
                     requestedDestination,
@@ -125,14 +248,16 @@ public sealed class ImageFileProcessingService
                             sourceMetadata,
                             Output: null,
                             ReplacedExistingOutput: false,
-                            SkippedExistingOutput: true));
+                            SkippedExistingOutput: true,
+                            AutoDownsampled: false,
+                            ResizeNotice: null));
                 }
 
                 temporaryPath = CreateTemporaryPath(destination.Value.Path);
                 var effectiveTransform = request.Transform;
                 var resizePlan = ImageResizePlanner.Plan(
-                    sourceMetadata.Width,
-                    sourceMetadata.Height,
+                    plannedWidth,
+                    plannedHeight,
                     safetyResult,
                     request.Transform.Resize);
 
@@ -170,7 +295,11 @@ public sealed class ImageFileProcessingService
                     return new ImageOperationResult<ImageFileProcessResult>(default, verified.Failure);
                 }
 
-                var committedPath = CommitTemporaryFile(temporaryPath, destination.Value.Path, destination.Value.ReplaceExisting);
+                var committedPath = CommitTemporaryFile(
+                    temporaryPath,
+                    destination.Value.Path,
+                    destination.Value.ReplaceExisting,
+                    request.ConflictPolicy);
                 temporaryPath = string.Empty;
 
                 return ImageOperationResult<ImageFileProcessResult>.Success(
@@ -179,11 +308,9 @@ public sealed class ImageFileProcessingService
                         sourceMetadata,
                         encoded.Value,
                         destination.Value.ReplaceExisting,
-                        SkippedExistingOutput: false));
-            }
-            finally
-            {
-                destinationGate.Release();
+                        SkippedExistingOutput: false,
+                        AutoDownsampled: resizePlan.AutoDownsampled,
+                        ResizeNotice: resizePlan.Notice));
             }
         }
         catch (OperationCanceledException)
@@ -301,7 +428,11 @@ public sealed class ImageFileProcessingService
         return ImageOperationResult<ImageMetadata>.Success(identified.Value);
     }
 
-    private static string CommitTemporaryFile(string temporaryPath, string destinationPath, bool replaceExisting)
+    private static string CommitTemporaryFile(
+        string temporaryPath,
+        string destinationPath,
+        bool replaceExisting,
+        OutputConflictPolicy conflictPolicy)
     {
         var fileSystemTemporaryPath = PortablePath.ForFileSystem(temporaryPath);
         var fileSystemDestinationPath = PortablePath.ForFileSystem(destinationPath);
@@ -311,6 +442,11 @@ public sealed class ImageFileProcessingService
             return destinationPath;
         }
 
+        if (conflictPolicy == OutputConflictPolicy.Fail && File.Exists(fileSystemDestinationPath))
+        {
+            throw new IOException("目标文件已存在且冲突策略为拒绝。");
+        }
+
         for (var attempt = 0; attempt < 64; attempt++)
         {
             try
@@ -318,7 +454,7 @@ public sealed class ImageFileProcessingService
                 File.Move(fileSystemTemporaryPath, fileSystemDestinationPath);
                 return PortablePath.ForFileSystem(fileSystemDestinationPath);
             }
-            catch (IOException) when (attempt < 63)
+            catch (IOException) when (attempt < 63 && conflictPolicy == OutputConflictPolicy.AutoRename)
             {
                 var renamedPath = CreateAutoRenamedPath(fileSystemDestinationPath);
                 if (string.Equals(renamedPath, fileSystemDestinationPath, StringComparison.OrdinalIgnoreCase))

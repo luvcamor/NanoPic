@@ -1,4 +1,10 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 using NanoPic.Core;
 
 namespace NanoPic.Infrastructure;
@@ -61,6 +67,7 @@ public enum SettingsLoadSource
 {
     Defaults = 0,
     CurrentFile,
+    BackupRestored,
     LegacyMigrated,
     InvalidCurrentFile
 }
@@ -124,7 +131,8 @@ public sealed class JsonSettingsStore
     public async Task<SettingsSaveResult> SaveAsync(NanoPicSettings settings, CancellationToken cancellationToken)
     {
         if (settings is null) throw new ArgumentNullException(nameof(settings));
-        var validation = SettingsValidator.Validate(settings);
+        var normalized = Normalize(settings);
+        var validation = SettingsValidator.Validate(normalized);
         if (validation is not null)
         {
             return new SettingsSaveResult(false, validation);
@@ -143,7 +151,7 @@ public sealed class JsonSettingsStore
             temporaryPath = Path.Combine(directory, $".{Path.GetFileName(SettingsPath)}.{Guid.NewGuid():N}.tmp");
             using (var stream = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 16_384, useAsync: true))
             {
-                await JsonSerializer.SerializeAsync(stream, settings, SerializerOptions, cancellationToken).ConfigureAwait(false);
+                await JsonSerializer.SerializeAsync(stream, normalized, SerializerOptions, cancellationToken).ConfigureAwait(false);
                 await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
                 stream.Flush(flushToDisk: true);
             }
@@ -184,15 +192,16 @@ public sealed class JsonSettingsStore
         {
             EnsureSizeWithinLimit(path);
             using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 16_384, useAsync: true);
-            var settings = await JsonSerializer.DeserializeAsync<NanoPicSettings>(stream, SerializerOptions, cancellationToken).ConfigureAwait(false);
-            if (settings is null || settings.SchemaVersion != NanoPicSettings.CurrentSchemaVersion)
+            var parsed = await JsonSerializer.DeserializeAsync<NanoPicSettings>(stream, SerializerOptions, cancellationToken).ConfigureAwait(false);
+            if (parsed is null)
             {
-                return ImageOperationResult<NanoPicSettings>.Failed(ImageFailureKind.InvalidConfiguration, "配置文件版本不受支持或内容为空。");
+                return ImageOperationResult<NanoPicSettings>.Failed(ImageFailureKind.InvalidConfiguration, "配置文件内容为空。");
             }
 
-            var validation = SettingsValidator.Validate(settings);
+            var normalized = Normalize(parsed);
+            var validation = SettingsValidator.Validate(normalized);
             return validation is null
-                ? ImageOperationResult<NanoPicSettings>.Success(settings)
+                ? ImageOperationResult<NanoPicSettings>.Success(normalized)
                 : new ImageOperationResult<NanoPicSettings>(default, validation);
         }
         catch (JsonException exception)
@@ -207,6 +216,41 @@ public sealed class JsonSettingsStore
         {
             return ImageOperationResult<NanoPicSettings>.Failed(ImageFailureKind.FileAccessConflict, "没有读取配置文件的权限。", exception);
         }
+    }
+
+    private static NanoPicSettings Normalize(NanoPicSettings settings)
+    {
+        var defaults = NanoPicSettings.Default;
+
+        var system = settings.System ?? defaults.System;
+        var watermark = settings.Watermark ?? defaults.Watermark;
+        var resize = settings.Resize ?? defaults.Resize;
+        var graph = settings.Graph ?? defaults.Graph;
+        var compress = settings.Compress ?? defaults.Compress;
+        var ui = settings.Ui ?? defaults.Ui;
+        var processing = settings.Processing ?? defaults.Processing;
+        var note = settings.MetadataNote ?? defaults.MetadataNote;
+
+        // D-7: 双字段迁移逻辑 —— 旧版若明确关闭 AutoDownscaleOnExceed，优先保持用户选择
+        var oversized = settings.OversizedImage ?? defaults.OversizedImage;
+        if (settings.System is not null && !settings.System.AutoDownscaleOnExceed && settings.OversizedImage is null)
+        {
+            oversized = oversized with { AutoDownsample = false };
+        }
+
+        return new NanoPicSettings(
+            NanoPicSettings.CurrentSchemaVersion,
+            system,
+            watermark,
+            resize,
+            graph,
+            compress,
+            ui)
+        {
+            Processing = processing,
+            MetadataNote = note,
+            OversizedImage = oversized
+        };
     }
 
     private async Task<ImageOperationResult<NanoPicSettings>> TryReadLegacyAsync(string path, CancellationToken cancellationToken)

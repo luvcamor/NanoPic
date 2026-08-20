@@ -56,6 +56,13 @@ public static class ImageSafetyValidator
                 "图像帧数超过安全处理上限或图像帧信息无效。");
         }
 
+        if (pixels * metadata.FrameCount > limits.HardMaxTotalPixels)
+        {
+            return new ImageOperationFailure(
+                ImageFailureKind.PixelBudgetExceeded,
+                "图像多帧总像素超过绝对安全预算上限。");
+        }
+
         return null;
     }
 
@@ -103,6 +110,13 @@ public static class ImageSafetyValidator
             return new SafetyValidationResult(SafetyAction.Reject, new ImageOperationFailure(
                 ImageFailureKind.PixelBudgetExceeded,
                 "图片尺寸超过 NanoPic 的绝对安全处理范围，已跳过。"), null, null);
+        }
+
+        if (pixels * metadata.FrameCount > limits.HardMaxTotalPixels)
+        {
+            return new SafetyValidationResult(SafetyAction.Reject, new ImageOperationFailure(
+                ImageFailureKind.PixelBudgetExceeded,
+                "图像多帧总像素超过绝对安全预算上限，已跳过。"), null, null);
         }
 
         // --- Soft limits: may downscale when AutoDownscaleOnExceed is enabled ---

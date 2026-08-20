@@ -73,12 +73,11 @@ public static class ImageResizePlanner
         var safeWidth = safetyResult.TargetWidth ?? sourceWidth;
         var safeHeight = safetyResult.TargetHeight ?? sourceHeight;
 
-        var userWidth = userResize!.Width ?? sourceWidth;
-        var userHeight = userResize!.Height ?? sourceHeight;
+        var (resolvedUserWidth, resolvedUserHeight) = ResolveUserResizeDimensions(sourceWidth, sourceHeight, userResize!);
 
         // Determine which is smaller in terms of total pixels
         long safePixels = (long)safeWidth * safeHeight;
-        long userPixels = (long)userWidth * userHeight;
+        long userPixels = (long)resolvedUserWidth * resolvedUserHeight;
 
         int finalWidth, finalHeight;
         bool autoDownsampled;
@@ -86,8 +85,8 @@ public static class ImageResizePlanner
         if (userPixels <= safePixels)
         {
             // User target is already within safe bounds — use it directly.
-            finalWidth = userWidth;
-            finalHeight = userHeight;
+            finalWidth = userResize!.Width ?? resolvedUserWidth;
+            finalHeight = userResize!.Height ?? resolvedUserHeight;
             autoDownsampled = false;
         }
         else
@@ -108,5 +107,46 @@ public static class ImageResizePlanner
             ResizeRequired: true,
             AutoDownsampled: autoDownsampled,
             Notice: combinedNotice);
+    }
+
+    private static (int Width, int Height) ResolveUserResizeDimensions(
+        int sourceWidth,
+        int sourceHeight,
+        ImageResizeOptions userResize)
+    {
+        if (userResize.Width.HasValue && userResize.Height.HasValue)
+        {
+            if (userResize.PreserveAspectRatio)
+            {
+                var widthRatio = (double)userResize.Width.Value / sourceWidth;
+                var heightRatio = (double)userResize.Height.Value / sourceHeight;
+                var ratio = Math.Min(widthRatio, heightRatio);
+                var targetWidth = Math.Max(1, (int)Math.Round(sourceWidth * ratio));
+                var targetHeight = Math.Max(1, (int)Math.Round(sourceHeight * ratio));
+                return (targetWidth, targetHeight);
+            }
+
+            return (userResize.Width.Value, userResize.Height.Value);
+        }
+
+        if (userResize.Width.HasValue)
+        {
+            var targetWidth = userResize.Width.Value;
+            var targetHeight = userResize.PreserveAspectRatio
+                ? Math.Max(1, (int)Math.Round((double)sourceHeight * targetWidth / sourceWidth))
+                : sourceHeight;
+            return (targetWidth, targetHeight);
+        }
+
+        if (userResize.Height.HasValue)
+        {
+            var targetHeight = userResize.Height.Value;
+            var targetWidth = userResize.PreserveAspectRatio
+                ? Math.Max(1, (int)Math.Round((double)sourceWidth * targetHeight / sourceHeight))
+                : sourceWidth;
+            return (targetWidth, targetHeight);
+        }
+
+        return (sourceWidth, sourceHeight);
     }
 }

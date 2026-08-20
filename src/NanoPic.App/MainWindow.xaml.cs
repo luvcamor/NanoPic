@@ -1,9 +1,14 @@
+using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -80,20 +85,27 @@ public partial class MainWindow : Window
         }
 
         _closeInProgress = true;
-        if (_runCancellation is not null)
+        try
         {
-            _runCancellation.Cancel();
-        }
+            if (_runCancellation is not null)
+            {
+                _runCancellation.Cancel();
+            }
 
-        await _settingsLoadTask;
-        var save = await _settingsStore.SaveAsync(CaptureSettings(), CancellationToken.None);
-        if (!save.Saved && save.Failure is not null)
+            await _settingsLoadTask;
+            var save = await _settingsStore.SaveAsync(CaptureSettings(), CancellationToken.None);
+            if (!save.Saved && save.Failure is not null)
+            {
+                System.Windows.MessageBox.Show(this, save.Failure.UserMessage, "配置保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            _closeCommitted = true;
+            Close();
+        }
+        finally
         {
-            System.Windows.MessageBox.Show(this, save.Failure.UserMessage, "配置保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            _closeInProgress = false;
         }
-
-        _closeCommitted = true;
-        Close();
     }
 
     private async void AddFiles_Click(object sender, RoutedEventArgs e)
@@ -116,17 +128,22 @@ public partial class MainWindow : Window
 
     private async void Window_Drop(object sender, System.Windows.DragEventArgs e)
     {
+        if (_runCancellation is not null) return;
         if (e.Data.GetData(System.Windows.DataFormats.FileDrop) is string[] paths)
         {
             await AddPathsAsync(paths);
         }
     }
 
-    private void Window_DragOver(object sender, System.Windows.DragEventArgs e) => e.Effects = e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop) ? System.Windows.DragDropEffects.Copy : System.Windows.DragDropEffects.None;
+    private void Window_DragOver(object sender, System.Windows.DragEventArgs e) => e.Effects = (_runCancellation is null && e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop)) ? System.Windows.DragDropEffects.Copy : System.Windows.DragDropEffects.None;
 
     private async Task AddPathsAsync(IEnumerable<string> paths)
     {
+        var existingPaths = new HashSet<string>(_items.Select(i => i.Path), StringComparer.OrdinalIgnoreCase);
         var skippedFiles = new List<string>();
+        var oversizedFiles = new List<string>();
+        const long maxFileSize = 512L * 1024L * 1024L;
+
         foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
         {
             var isDirectory = Directory.Exists(path);
@@ -135,10 +152,32 @@ public partial class MainWindow : Window
             {
                 skippedFiles.Add(Path.GetFileName(path));
             }
-            foreach (var file in scan.Files.Where(file => _items.All(item => !string.Equals(item.Path, file.Path, StringComparison.OrdinalIgnoreCase))))
+
+            foreach (var file in scan.Files)
             {
-                _items.Add(new QueueItem(file.Path, file.Bytes));
+                if (file.Bytes > maxFileSize)
+                {
+                    oversizedFiles.Add(Path.GetFileName(file.Path));
+                    continue;
+                }
+
+                if (existingPaths.Add(file.Path))
+                {
+                    _items.Add(new QueueItem(file.Path, file.Bytes));
+                }
             }
+        }
+
+        if (oversizedFiles.Count > 0)
+        {
+            var preview = string.Join("、", oversizedFiles.Take(3));
+            var suffix = oversizedFiles.Count > 3 ? $" 等 {oversizedFiles.Count} 个" : string.Empty;
+            System.Windows.MessageBox.Show(
+                this,
+                $"以下文件大小超过 512 MB 安全上限，已跳过导入：\n{preview}{suffix}",
+                "文件过大",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
         }
 
         if (skippedFiles.Count > 0)
@@ -217,11 +256,80 @@ public partial class MainWindow : Window
         var temporaryPath = Path.Combine(Path.GetTempPath(), $"nanopic-preview-{Guid.NewGuid():N}.png");
         try
         {
-            var sourceFormat = await Task.Run(() => DetectFormatForPath(item.Path)).ConfigureAwait(true);
-            if (sourceFormat == ImageFormat.Unknown)
+            var effectiveSettings = CaptureSettings();
+            var safetyLimits = ImageSafetyLimits.Default with
             {
-                System.Windows.MessageBox.Show(this, "无法识别所选图片的格式。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MaxPixels = effectiveSettings.OversizedImage.SoftMaxPixels,
+                AutoDownscaleOnExceed = effectiveSettings.System.AutoDownscaleOnExceed
+            };
+
+            ImageFormat sourceFormat;
+            ImageHeaderInfo headerInfo;
+
+            using (var stream = new FileStream(
+                PortablePath.ForFileSystem(item.Path),
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                bufferSize: 65_536,
+                useAsync: false))
+            {
+                if (stream.Length > safetyLimits.MaxSourceBytes)
+                {
+                    System.Windows.MessageBox.Show(this, "图像文件大小超过安全处理上限，无法预览。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                var detected = await ImageFileSignatureInspector.DetectAsync(stream, CancellationToken.None).ConfigureAwait(true);
+                if (!detected.IsSuccess || detected.Value == ImageFormat.Unknown)
+                {
+                    System.Windows.MessageBox.Show(this, "无法识别所选图片的格式。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                sourceFormat = detected.Value;
+                var probeResult = ImageDimensionProbe.Probe(stream, sourceFormat);
+                if (!probeResult.IsSuccess || probeResult.Value is null)
+                {
+                    System.Windows.MessageBox.Show(this, "未能解析图像头部尺寸，无法安全预览。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+
+                headerInfo = probeResult.Value;
+            }
+
+            var swap = headerInfo.ExifOrientation is >= 5 and <= 8;
+            var plannedWidth = swap ? headerInfo.Height : headerInfo.Width;
+            var plannedHeight = swap ? headerInfo.Width : headerInfo.Height;
+
+            var preMetadata = new NanoPic.Core.ImageMetadata(
+                sourceFormat,
+                plannedWidth,
+                plannedHeight,
+                headerInfo.FrameCount ?? 1,
+                HasAlpha: false,
+                SourceBytes: item.Bytes,
+                ExifOrientation: headerInfo.ExifOrientation);
+
+            var safetyResult = ImageSafetyValidator.ValidateWithAction(preMetadata, safetyLimits);
+            if (safetyResult.Action == SafetyAction.Reject)
+            {
+                var msg = safetyResult.Failure?.UserMessage ?? "图像尺寸超过安全上限，无法预览。";
+                System.Windows.MessageBox.Show(this, msg, "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
+            }
+
+            var safeWidth = safetyResult.TargetWidth ?? plannedWidth;
+            var safeHeight = safetyResult.TargetHeight ?? plannedHeight;
+
+            const int previewMaxEdge = 2048;
+            int previewTargetWidth = safeWidth;
+            int previewTargetHeight = safeHeight;
+            if (previewTargetWidth > previewMaxEdge || previewTargetHeight > previewMaxEdge)
+            {
+                var ratio = Math.Min((double)previewMaxEdge / previewTargetWidth, (double)previewMaxEdge / previewTargetHeight);
+                previewTargetWidth = Math.Max(1, (int)Math.Round(previewTargetWidth * ratio));
+                previewTargetHeight = Math.Max(1, (int)Math.Round(previewTargetHeight * ratio));
             }
 
             var request = new ImageEncodeRequest(
@@ -229,13 +337,22 @@ public partial class MainWindow : Window
                 temporaryPath,
                 sourceFormat,
                 ImageFormat.Png,
-                new ImageTransformOptions(AutoOrient: false),
+                new ImageTransformOptions(
+                    AutoOrient: true,
+                    Resize: new ImageResizeOptions(
+                        Enabled: true,
+                        Width: previewTargetWidth,
+                        Height: previewTargetHeight,
+                        PreserveAspectRatio: true)),
                 new ImageEncodingOptions(ImageOutputFormat.Png),
                 ImageSafetyLimits.Default with
                 {
-                    MaxPixels = _settings.OversizedImage.SoftMaxPixels,
-                    AutoDownscaleOnExceed = _settings.System.AutoDownscaleOnExceed
+                    MaxWidth = int.MaxValue,
+                    MaxHeight = int.MaxValue,
+                    MaxPixels = long.MaxValue,
+                    AutoDownscaleOnExceed = true
                 });
+
             var encoded = await Task.Run(() => _previewCodec.TransformAndEncodeAsync(request, CancellationToken.None))
                 .ConfigureAwait(true);
             if (!encoded.IsSuccess)
@@ -397,19 +514,15 @@ public partial class MainWindow : Window
         StartButton.IsEnabled = false; CancelButton.IsEnabled = true; QueueEditPanel.IsEnabled = false; Progress.Visibility = Visibility.Visible; Progress.Value = 0;
         try
         {
-            // Pre-scan image metadata to compute oversized-image concurrency limits.
+            // Pre-scan image metadata using header probe to compute oversized-image concurrency limits.
             var pixelCounts = await PreScanPixelCountsAsync(jobs, _runCancellation.Token);
-            var concurrencyLimit = OversizedImageConcurrencyPolicy.EffectiveConcurrency(
-                pixelCounts, effectiveSettings.System.MaxThreads);
-            var actualConcurrency = concurrencyLimit.MaxConcurrentTasks;
 
             var progress = new Progress<ImageBatchProgress>(value =>
             {
                 Progress.Value = selected.Length == 0 ? 0 : (value.Completed + planningFailures) * 100d / selected.Length;
-                var concurrencyNote = actualConcurrency < effectiveSettings.System.MaxThreads
-                    ? $" · 内存保护" : string.Empty;
-                ProgressText.Text = $"成功 {value.Succeeded}，失败 {value.Failed + planningFailures}，取消 {value.Canceled}，并发 {actualConcurrency}/{effectiveSettings.System.MaxThreads}{concurrencyNote}";
+                ProgressText.Text = $"成功 {value.Succeeded}，失败 {value.Failed + planningFailures}，取消 {value.Canceled}，最大并发 {effectiveSettings.System.MaxThreads}";
             });
+
             var batch = await _batchProcessor.ProcessAsync(
                 jobs.Select(job => job.Request).ToArray(),
                 effectiveSettings.System.MaxThreads,
@@ -423,7 +536,12 @@ public partial class MainWindow : Window
                 var result = batch.Items[i];
                 if (result.IsSuccess)
                 {
-                    item.MarkSuccess(result.Value?.Output?.ExceededTarget == true, result.Value?.OutputPath, result.Value?.SkippedExistingOutput == true);
+                    var processResult = result.Value;
+                    item.MarkSuccess(processResult?.Output?.ExceededTarget == true, processResult?.OutputPath, processResult?.SkippedExistingOutput == true);
+                    if (processResult?.AutoDownsampled == true && !string.IsNullOrWhiteSpace(processResult.ResizeNotice))
+                    {
+                        item.Detail = processResult.ResizeNotice ?? string.Empty;
+                    }
                 }
                 else
                 {
@@ -437,7 +555,44 @@ public partial class MainWindow : Window
             ProgressText.Text = $"成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}，共 {selected.Length}";
             await WriteLogAsync("INFO", $"批处理完成：总数 {selected.Length}，成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}。", null);
         }
-        finally { _runCancellation.Dispose(); _runCancellation = null; StartButton.IsEnabled = true; CancelButton.IsEnabled = false; QueueEditPanel.IsEnabled = true; RefreshUi(); }
+        catch (OperationCanceledException)
+        {
+            foreach (var item in selected.Where(i => i.IsProcessing || i.IsPending))
+            {
+                item.MarkCanceled();
+            }
+            ProgressText.Text = "批处理已取消。";
+            await WriteLogAsync("INFO", "批处理已被用户取消。", null);
+        }
+        catch (OutOfMemoryException oom)
+        {
+            foreach (var item in selected.Where(i => i.IsProcessing || i.IsPending))
+            {
+                item.MarkFailure(ImageFailureKind.PixelBudgetExceeded, "系统内存不足，已停止后续处理。");
+            }
+            ProgressText.Text = "系统内存不足，批处理已停止。";
+            await WriteLogAsync("ERROR", "批处理因系统内存不足停止。", oom);
+            System.Windows.MessageBox.Show(this, "系统可用内存不足，已中止批处理操作。", "内存不足", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        catch (Exception exception)
+        {
+            foreach (var item in selected.Where(i => i.IsProcessing || i.IsPending))
+            {
+                item.MarkFailure(ImageFailureKind.Unknown, "批处理发生未预期错误。");
+            }
+            ProgressText.Text = "批处理发生错误。";
+            await WriteLogAsync("ERROR", $"批处理发生未捕获异常：{exception.Message}", exception);
+            System.Windows.MessageBox.Show(this, $"处理过程中发生错误：{exception.Message}", "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            _runCancellation?.Dispose();
+            _runCancellation = null;
+            StartButton.IsEnabled = true;
+            CancelButton.IsEnabled = false;
+            QueueEditPanel.IsEnabled = true;
+            RefreshUi();
+        }
     }
 
     private async Task WriteLogAsync(string level, string message, Exception? exception)
@@ -480,35 +635,60 @@ public partial class MainWindow : Window
         if (jobs.Count == 0) return Array.Empty<long>();
 
         var pixelCounts = new long[jobs.Count];
+        var semaphore = new SemaphoreSlim(4);
+        var tasks = new List<Task>(jobs.Count);
+
         for (var i = 0; i < jobs.Count; i++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            try
+            var index = i;
+            var path = jobs[index].Item.Path;
+            var format = jobs[index].Request.Encoding.OutputFormat.ToImageFormat();
+
+            tasks.Add(Task.Run(async () =>
             {
-                using var stream = new FileStream(
-                    jobs[i].Item.Path,
-                    FileMode.Open,
-                    FileAccess.Read,
-                    FileShare.Read,
-                    bufferSize: 65_536,
-                    useAsync: false);
-                var identified = await _previewCodec.IdentifyAsync(stream, cancellationToken).ConfigureAwait(false);
-                if (identified.IsSuccess && identified.Value is not null)
+                await semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
                 {
-                    pixelCounts[i] = (long)identified.Value.Width * identified.Value.Height;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    using var stream = new FileStream(
+                        PortablePath.ForFileSystem(path),
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.Read,
+                        bufferSize: 65_536,
+                        useAsync: false);
+
+                    var detected = await ImageFileSignatureInspector.DetectAsync(stream, cancellationToken).ConfigureAwait(false);
+                    if (detected.IsSuccess && detected.Value != ImageFormat.Unknown)
+                    {
+                        var probeResult = ImageDimensionProbe.Probe(stream, detected.Value);
+                        if (probeResult.IsSuccess && probeResult.Value is { } info)
+                        {
+                            pixelCounts[index] = (long)info.Width * info.Height;
+                            return;
+                        }
+                    }
+
+                    // Probe failed or unsupported: treat as highest risk
+                    pixelCounts[index] = long.MaxValue;
                 }
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                // If we cannot identify the image, leave the pixel count as 0
-                // (treated as small image for concurrency purposes).
-            }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception)
+                {
+                    // Fallback to max risk to ensure safe conservative concurrency
+                    pixelCounts[index] = long.MaxValue;
+                }
+                finally
+                {
+                    semaphore.Release();
+                }
+            }, cancellationToken));
         }
 
+        await Task.WhenAll(tasks).ConfigureAwait(false);
         return pixelCounts;
     }
 
@@ -532,6 +712,7 @@ public partial class MainWindow : Window
         using var stream = File.OpenRead(path);
         return ImageFileSignatureInspector.DetectAsync(stream, CancellationToken.None).GetAwaiter().GetResult().Value;
     }
+
     private bool TryBuildOptions(out ImageEncodingOptions encoding, out ImageTransformOptions transforms, out string failure)
     {
         failure = string.Empty; encoding = default!; transforms = default!;
@@ -605,6 +786,7 @@ public partial class MainWindow : Window
             System.Windows.MessageBox.Show(this, "打开输出目录失败，请确认目录可以访问。", "无法打开输出目录", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
+
     private void About_Click(object sender, RoutedEventArgs e)
     {
         var version = typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
@@ -673,6 +855,7 @@ public partial class MainWindow : Window
         content.Children.Add(okButton);
         about.ShowDialog();
     }
+
     private void OutputMode_Changed(object sender, RoutedEventArgs e)
     {
         if (OutputDirectoryBox is null || OverwriteOutput is null)
@@ -683,25 +866,30 @@ public partial class MainWindow : Window
         OutputDirectoryBox.IsEnabled = !OverwriteOutput.IsChecked.GetValueOrDefault();
         RefreshUi();
     }
+
     private void TopMostChanged(object sender, RoutedEventArgs e) => Topmost = TopMostCheck.IsChecked == true;
+
     private void MaxThreadsSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
     {
         if (MaxThreadsValueText is null) return;
         MaxThreadsValueText.Text = ((int)e.NewValue).ToString();
         RefreshSettingsUi();
     }
+
     private void CompressTab_Checked(object sender, RoutedEventArgs e)
     {
         if (CompressTabPanel is null || ImageTabPanel is null) return;
         CompressTabPanel.Visibility = Visibility.Visible;
         ImageTabPanel.Visibility = Visibility.Collapsed;
     }
+
     private void ImageTab_Checked(object sender, RoutedEventArgs e)
     {
         if (CompressTabPanel is null || ImageTabPanel is null) return;
         CompressTabPanel.Visibility = Visibility.Collapsed;
         ImageTabPanel.Visibility = Visibility.Visible;
     }
+
     private void SettingsChanged(object sender, RoutedEventArgs e) => RefreshSettingsUi();
     private void SettingsChanged(object sender, TextChangedEventArgs e) => RefreshSettingsUi();
 
@@ -841,6 +1029,7 @@ public partial class MainWindow : Window
         EmptyState.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         SummaryText.Text = $"已选 {_items.Count(item => item.IsSelected)} / 共 {_items.Count}";
     }
+
     private void RefreshSettingsUi()
     {
         if (QualityMode is null || TargetSizeMode is null || QualityBox is null || TargetSizeBox is null || AllowExceedCheck is null || WidthBox is null || HeightBox is null || PreserveAspectCheck is null || BrightnessBox is null || WatermarkBox is null || WatermarkColorBox is null || WatermarkColorSwatch is null || WatermarkColorPopup is null || WatermarkPositionBox is null || WatermarkOpacityBox is null || WatermarkFontSizeBox is null || WatermarkMarginBox is null)
@@ -918,6 +1107,7 @@ public partial class MainWindow : Window
         if (SoftMaxPixelsBox is not null)
         {
             var mpValue = int.TryParse(form.SoftMaxPixels, out var mp) ? mp : 200;
+            var foundIndex = -1;
             for (var i = 0; i < SoftMaxPixelsBox.Items.Count; i++)
             {
                 if (SoftMaxPixelsBox.Items[i] is ComboBoxItem item &&
@@ -925,9 +1115,23 @@ public partial class MainWindow : Window
                     int.TryParse(tag, out var tagValue) &&
                     tagValue == mpValue)
                 {
-                    SoftMaxPixelsBox.SelectedIndex = i;
+                    foundIndex = i;
                     break;
                 }
+            }
+            if (foundIndex >= 0)
+            {
+                SoftMaxPixelsBox.SelectedIndex = foundIndex;
+            }
+            else
+            {
+                var customItem = new ComboBoxItem
+                {
+                    Content = $"{mpValue} MP (自定义)",
+                    Tag = mpValue.ToString()
+                };
+                SoftMaxPixelsBox.Items.Add(customItem);
+                SoftMaxPixelsBox.SelectedItem = customItem;
             }
         }
         Topmost = form.TopMost;
@@ -977,16 +1181,23 @@ public sealed class QueueItem : INotifyPropertyChanged
     private string _detail = string.Empty;
     private ImageFailureKind? _failureKind;
     public QueueItem(string path, long bytes) { Path = path; Bytes = bytes; }
-    public string Path { get; } public long Bytes { get; } public string FileName => System.IO.Path.GetFileName(Path); public string Directory => System.IO.Path.GetDirectoryName(Path) ?? string.Empty; public string SizeText => $"{Bytes / 1024d:N1} KB";
+    public string Path { get; }
+    public long Bytes { get; }
+    public string FileName => System.IO.Path.GetFileName(Path);
+    public string Directory => System.IO.Path.GetDirectoryName(Path) ?? string.Empty;
+    public string SizeText => $"{Bytes / 1024d:N1} KB";
     public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(); } }
     public string Status { get => _status; private set { _status = value; OnPropertyChanged(); } }
-    public string Detail { get => _detail; private set { _detail = value; OnPropertyChanged(); } }
+    public string Detail { get => _detail; set { _detail = value; OnPropertyChanged(); } }
     public bool HasFailure => _failureKind is not null && _failureKind != ImageFailureKind.TaskCanceled;
+    public bool IsProcessing => string.Equals(_status, "处理中", StringComparison.Ordinal);
+    public bool IsPending => string.Equals(_status, "等待", StringComparison.Ordinal);
 
     public void MarkPending() { _failureKind = null; Status = "等待"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkProcessing() { _failureKind = null; Status = "处理中"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkSuccess(bool exceededTarget, string? outputPath, bool skipped) { _failureKind = null; Status = skipped ? "已跳过" : exceededTarget ? "完成（已超限）" : "完成"; Detail = outputPath ?? string.Empty; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkFailure(ImageFailureKind kind, string message) { _failureKind = kind; Status = kind == ImageFailureKind.TaskCanceled ? "已取消" : "失败"; Detail = message; OnPropertyChanged(nameof(HasFailure)); }
+    public void MarkCanceled() => MarkFailure(ImageFailureKind.TaskCanceled, "已取消");
     public event PropertyChangedEventHandler? PropertyChanged; private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 

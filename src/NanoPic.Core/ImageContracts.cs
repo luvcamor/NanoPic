@@ -48,13 +48,20 @@ public enum OutputConflictPolicy
     AutoRename
 }
 
+public sealed record ImageHeaderInfo(
+    int Width,
+    int Height,
+    int? FrameCount,
+    int ExifOrientation = 1);
+
 public sealed record ImageMetadata(
     ImageFormat Format,
     int Width,
     int Height,
     int FrameCount,
     bool HasAlpha,
-    long SourceBytes);
+    long SourceBytes,
+    int ExifOrientation = 1);
 
 public sealed record ImageSafetyLimits(
     long MaxSourceBytes,
@@ -63,7 +70,8 @@ public sealed record ImageSafetyLimits(
     long MaxPixels,
     int MaxFrames,
     bool AutoDownscaleOnExceed = true,
-    long HardMaxPixels = 500_000_000)
+    long HardMaxPixels = 500_000_000,
+    long HardMaxTotalPixels = 1_000_000_000)
 {
     /// <summary>
     /// Default soft limits. The user-facing MaxPixels serves as the soft threshold
@@ -77,7 +85,8 @@ public sealed record ImageSafetyLimits(
         MaxPixels: 200_000_000,
         MaxFrames: 1_000,
         AutoDownscaleOnExceed: true,
-        HardMaxPixels: 500_000_000);
+        HardMaxPixels: 500_000_000,
+        HardMaxTotalPixels: 1_000_000_000);
 }
 
 public sealed record ImageResizeOptions(
@@ -162,7 +171,9 @@ public sealed record ImageFileProcessResult(
     ImageMetadata Source,
     ImageEncodedOutput? Output,
     bool ReplacedExistingOutput,
-    bool SkippedExistingOutput);
+    bool SkippedExistingOutput,
+    bool AutoDownsampled = false,
+    string? ResizeNotice = null);
 
 public sealed record ImageBatchProgress(
     int Total,
