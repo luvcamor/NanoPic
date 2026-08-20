@@ -137,6 +137,7 @@ try {
             'NanoPic.exe.sha256',
             'THIRD-PARTY-NOTICES.txt',
             'licenses/BSD-3-CLAUSE-LIBWEBP.txt',
+            'licenses/MIT-MANAGED-DEPENDENCIES.txt',
             'licenses/README.md',
             'SBOM.spdx.json',
             'manifest.json'
@@ -173,6 +174,7 @@ try {
         'NanoPic.exe.sha256',
         'THIRD-PARTY-NOTICES.txt',
         'licenses/BSD-3-CLAUSE-LIBWEBP.txt',
+        'licenses/MIT-MANAGED-DEPENDENCIES.txt',
         'licenses/README.md',
         'SBOM.spdx.json',
         'manifest.json'

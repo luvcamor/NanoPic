@@ -1,96 +1,45 @@
-NanoPic Third-Party Notices
-===========================
+NanoPic 3.2.2 — Third-Party Notices
+====================================
 
-This project distributes and/or uses the following third-party components.
+NanoPic distributes third-party code inside its single executable. The full
+license texts referenced below are included in the release `licenses` folder.
 
-1. FreeImage
-------------
+libwebp 1.6.0
+-------------
+Copyright (c) 2010, Google Inc. All rights reserved.
+License: BSD 3-Clause License.
+Project: https://chromium.googlesource.com/webm/libwebp
 
-Component:
-- FreeImage.dll
-- FreeImageNET 3.17.1 (managed wrapper package)
+NanoPic embeds the official Windows x64 cwebp and dwebp tools. The complete
+license text is distributed as BSD-3-CLAUSE-LIBWEBP.txt.
 
-Observed local binary version:
-- FreeImage.dll file version: 3.18.0.0
+Costura.Fody 6.2.0
+------------------
+License: MIT License.
+Project: https://github.com/Fody/Costura
 
-Used by:
-- PNG encoding fallback/quantization path in NanoPic
-- See NanoPic/Program/Logic/Compress/PngEncoder.cs
+Costura weaves NanoPic's managed runtime dependencies into NanoPic.exe and
+provides the embedded assembly loader. The MIT license is distributed as
+MIT-MANAGED-DEPENDENCIES.txt.
 
-Official project:
-- https://freeimage.sourceforge.io/
+Microsoft managed runtime libraries
+-----------------------------------
+License: MIT License.
+Project: https://github.com/dotnet/runtime
 
-Official licensing page:
-- https://freeimage.sourceforge.io/license.html
+- Microsoft.Bcl.AsyncInterfaces 8.0.0
+- System.Buffers 4.5.1
+- System.Memory 4.5.5
+- System.Numerics.Vectors 4.5.0
+- System.Runtime.CompilerServices.Unsafe 6.0.0
+- System.Text.Encodings.Web 8.0.0
+- System.Text.Json 8.0.5
+- System.Threading.Tasks.Extensions 4.5.4
+- System.ValueTuple 4.5.0
 
-License model:
-- Dual-licensed by the FreeImage project under GPLv2/GPLv3 or the FreeImage Public License (FIPL).
-- For commercial or closed-source distribution, the FreeImage project explicitly points users to the FIPL option.
+The complete MIT license is distributed as MIT-MANAGED-DEPENDENCIES.txt.
 
-Compliance notes from the official licensing page:
-- Distribute the license text you choose with the application.
-- Provide a suitable acknowledgement in the program's About box or the user documentation.
-
-Suggested acknowledgement text from the FreeImage project:
-- "This software uses the FreeImage open source image library. See http://freeimage.sourceforge.net for details."
-
-Repository note:
-- See licenses/FreeImage-NOTICE.txt for the current NanoPic-specific usage summary.
-- See licenses/FreeImage-FIPL-1.0.txt for the bundled FIPL text.
-
-
-2. libwebp
-----------
-
-Component:
-- libwebp.dll
-- PicLibrary/Resource/libwebp.lib
-- PicLibrary/Resource/libwebpdemux.lib
-- PicLibrary/Resource/libwebpmux.lib
-
-Observed local runtime version:
-- libwebp decoder version reported by the bundled DLL: 0.4.1
-
-Used by:
-- WebP encode/decode interop in NanoPic
-- See NanoPic/Program/FileIO/DLL_WEBP_Decode.cs
-- See NanoPic/Program/FileIO/DLL_WEBP_Encode.cs
-
-Official project:
-- https://chromium.googlesource.com/webm/libwebp
-- https://github.com/webmproject/libwebp
-
-Official licensing page:
-- https://www.webmproject.org/license/software/
-
-Additional IP rights grant:
-- https://www.webmproject.org/license/additional/
-
-License model:
-- The WebM Project software license (BSD-3-Clause style) plus the WebM additional IP rights grant.
-
-Compliance notes from the official project pages:
-- Redistribution in source and binary form requires preserving the copyright notice,
-  license conditions, and disclaimer in documentation and/or other accompanying materials.
-- The WebM project also publishes an additional patent grant with a defensive termination clause.
-
-Repository note:
-- See licenses/libwebp-NOTICE.txt for the current NanoPic-specific usage summary.
-- See licenses/libwebp-COPYING.txt for the bundled libwebp software license text.
-- See licenses/WebM-Additional-IP-Rights.txt for the bundled WebM patent grant text.
-
-
-3. Distribution guidance for NanoPic releases
----------------------------------------------
-
-For binary releases of NanoPic, include at minimum:
-- this THIRD-PARTY-NOTICES.txt file
-- licenses/FreeImage-NOTICE.txt
-- licenses/libwebp-NOTICE.txt
-- licenses/FreeImage-FIPL-1.0.txt
-- licenses/libwebp-COPYING.txt
-- licenses/WebM-Additional-IP-Rights.txt
-
-Recommended:
-- add a Third-Party Notices or Licenses entry in the application About dialog
-- mention that NanoPic uses FreeImage and libwebp in release notes or README
+Windows Imaging Component and .NET Framework 4.8
+------------------------------------------------
+Windows Imaging Component (WIC) and .NET Framework 4.8 are Windows system
+components and are not redistributed as separate NanoPic release files.

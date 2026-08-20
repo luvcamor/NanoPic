@@ -15,16 +15,27 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v6
         with:
           global-json-file: global.json
 
       - name: Build, test, and publish net48 single-executable release
         shell: pwsh
-        run: ./build/Publish-NanoPic.ps1 -Configuration Release -RuntimeIdentifier win-x64
+        run: |
+          New-Item -ItemType Directory -Force -Path artifacts/test-reports | Out-Null
+          $env:NANOPIC_REPORT_DIR = (Resolve-Path artifacts/test-reports).Path
+          ./build/Publish-NanoPic.ps1 -Configuration Release -RuntimeIdentifier win-x64
+
+      - name: Audit NuGet vulnerabilities
+        shell: pwsh
+        run: |
+          $report = dotnet list NanoPic.sln package --vulnerable --include-transitive --format json --no-restore | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet vulnerability audit failed to run.' }
+          Set-Content -LiteralPath artifacts/test-reports/nuget-vulnerabilities.json -Value $report -Encoding utf8
+          if ($report -match '"vulnerabilities"\s*:') { throw 'NuGet vulnerability audit found one or more vulnerable packages.' }
 
       - name: Verify publish layout and size gate
         shell: pwsh
@@ -34,6 +45,7 @@ jobs:
             'artifacts/publish/win-x64/NanoPic.exe.sha256',
             'artifacts/publish/win-x64/THIRD-PARTY-NOTICES.txt',
             'artifacts/publish/win-x64/licenses/BSD-3-CLAUSE-LIBWEBP.txt',
+            'artifacts/publish/win-x64/licenses/MIT-MANAGED-DEPENDENCIES.txt',
             'artifacts/publish/win-x64/licenses/README.md',
             'artifacts/publish/win-x64/SBOM.spdx.json',
             'artifacts/publish/win-x64/manifest.json'
@@ -53,14 +65,22 @@ jobs:
           if ($manifest.primaryArtifact.sha256 -ne $actual) { throw 'Manifest hash does not match NanoPic.exe.' }
           $sbom = Get-Content 'artifacts/publish/win-x64/SBOM.spdx.json' -Raw | ConvertFrom-Json
           if ('libwebp' -notin @($sbom.packages.name)) { throw 'SBOM does not contain libwebp.' }
+          if ('System.Text.Json' -notin @($sbom.packages.name)) { throw 'SBOM does not contain managed runtime dependencies.' }
           $forbidden = @(Get-ChildItem 'artifacts/publish/win-x64' -File | Where-Object {
             $_.Extension -in @('.dll', '.pdb', '.config') -or $_.Name -match 'Magick|ImageMagick'
           })
           if ($forbidden.Count -ne 0) { throw "Forbidden runtime files: $($forbidden.Name -join ', ')" }
 
       - name: Upload release audit bundle
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: NanoPic-win-x64
           path: artifacts/publish/win-x64
+          if-no-files-found: error
+
+      - name: Upload test and security reports
+        uses: actions/upload-artifact@v7
+        with:
+          name: NanoPic-test-reports
+          path: artifacts/test-reports
           if-no-files-found: error

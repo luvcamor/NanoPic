@@ -128,7 +128,7 @@
       "nanopic.codecs": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.0.0-preview.1, )"
+          "NanoPic.Core": "[3.2.2, )"
         }
       },
       "nanopic.core": {

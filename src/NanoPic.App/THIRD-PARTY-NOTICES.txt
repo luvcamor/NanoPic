@@ -1,5 +1,8 @@
-NanoPic 3.0 — Third-Party Notices
-===================================
+NanoPic 3.2.2 — Third-Party Notices
+====================================
+
+NanoPic distributes third-party code inside its single executable. The full
+license texts referenced below are included in the release `licenses` folder.
 
 libwebp 1.6.0
 -------------
@@ -8,8 +11,35 @@ License: BSD 3-Clause License.
 Project: https://chromium.googlesource.com/webm/libwebp
 
 NanoPic embeds the official Windows x64 cwebp and dwebp tools. The complete
-license text is distributed as BSD-3-CLAUSE-LIBWEBP.txt with release audit
-materials.
+license text is distributed as BSD-3-CLAUSE-LIBWEBP.txt.
 
+Costura.Fody 6.2.0
+------------------
+License: MIT License.
+Project: https://github.com/Fody/Costura
+
+Costura weaves NanoPic's managed runtime dependencies into NanoPic.exe and
+provides the embedded assembly loader. The MIT license is distributed as
+MIT-MANAGED-DEPENDENCIES.txt.
+
+Microsoft managed runtime libraries
+-----------------------------------
+License: MIT License.
+Project: https://github.com/dotnet/runtime
+
+- Microsoft.Bcl.AsyncInterfaces 8.0.0
+- System.Buffers 4.5.1
+- System.Memory 4.5.5
+- System.Numerics.Vectors 4.5.0
+- System.Runtime.CompilerServices.Unsafe 6.0.0
+- System.Text.Encodings.Web 8.0.0
+- System.Text.Json 8.0.5
+- System.Threading.Tasks.Extensions 4.5.4
+- System.ValueTuple 4.5.0
+
+The complete MIT license is distributed as MIT-MANAGED-DEPENDENCIES.txt.
+
+Windows Imaging Component and .NET Framework 4.8
+------------------------------------------------
 Windows Imaging Component (WIC) and .NET Framework 4.8 are Windows system
-components and are not redistributed in the NanoPic executable.
+components and are not redistributed as separate NanoPic release files.

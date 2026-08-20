@@ -237,7 +237,7 @@ public sealed class RealWorldBenchmarkTests
             // 测试场景 5：透明度通道（Alpha Channel）保真度测试
             // -------------------------------------------------------------
             reportSb.AppendLine("## 场景 5：透明通道 (Alpha Channel) 渐变保真度");
-            reportSb.AppendLine("验证：半透明圆形图标在量化压缩后，透明度渐变与透明背景完好无损保留。");
+            reportSb.AppendLine("验证：半透明圆形图标在量化压缩后仍保留 Alpha 通道；渐变级别由专项量化回归测试覆盖。");
             reportSb.AppendLine();
             reportSb.AppendLine("| 图标原大小 | 压缩后大小 | 体积减小 | 透明通道状态 | 输出格式 |");
             reportSb.AppendLine("|---|---|---|---|---|");
@@ -298,7 +298,7 @@ public sealed class RealWorldBenchmarkTests
 
             reportSb.AppendLine();
             reportSb.AppendLine("---");
-            reportSb.AppendLine("**实机测试结论**: 全部 6 组测试场景均 100% 成功通过，功能符合预期！");
+            reportSb.AppendLine("**实机测试结论**: 本报告中的 6 组自动化断言全部通过。");
 
             _output.WriteLine(reportSb.ToString());
             var artifactDir = Environment.GetEnvironmentVariable("NANOPIC_REPORT_DIR");

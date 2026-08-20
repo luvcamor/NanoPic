@@ -90,7 +90,10 @@ public sealed class PngCompressionTests
             var codec = new WicImageCodec();
             var req = new ImageEncodeRequest(
                 sourcePath, outPath, ImageFormat.Png, ImageFormat.Png,
-                new ImageTransformOptions(),
+                // SettingsFormMapper always supplies this background option. It is
+                // semantically inactive for PNG and must not disable source reuse.
+                new ImageTransformOptions(
+                    Background: new ImageBackgroundOptions(true, "#FFFFFF")),
                 new ImageEncodingOptions(ImageOutputFormat.Png, Quality: 100),
                 ImageSafetyLimits.Default);
 
@@ -101,6 +104,48 @@ public sealed class PngCompressionTests
             using var dstImg = new MagickImage(outPath);
             Assert.Equal(srcImg.Width, dstImg.Width);
             Assert.Equal(srcImg.Height, dstImg.Height);
+            Assert.Equal(0d, srcImg.Compare(dstImg, ErrorMetric.Absolute));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
+    public async Task C3b_TargetSize_AlreadySatisfied_Reuses_Source_Png()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "nanopic-png-source-target-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var sourcePath = Path.Combine(AppContext.BaseDirectory, "assets", "transparent.png");
+            Assert.True(File.Exists(sourcePath), $"Missing test asset: {sourcePath}");
+            var sourceBytes = new FileInfo(sourcePath).Length;
+            var outPath = Path.Combine(tempDir, "already-satisfied.png");
+
+            var codec = new WicImageCodec();
+            var req = new ImageEncodeRequest(
+                sourcePath, outPath, ImageFormat.Png, ImageFormat.Png,
+                new ImageTransformOptions(
+                    Background: new ImageBackgroundOptions(true, "#FFFFFF")),
+                new ImageEncodingOptions(
+                    ImageOutputFormat.Png,
+                    Quality: 80,
+                    TargetSize: new TargetSizeOptions(
+                        TargetBytes: sourceBytes,
+                        AllowExceed: false,
+                        AllowResizeForTarget: false)),
+                ImageSafetyLimits.Default);
+
+            var result = await codec.TransformAndEncodeAsync(req, CancellationToken.None);
+
+            Assert.True(result.IsSuccess, result.Failure?.UserMessage);
+            Assert.NotNull(result.Value);
+            Assert.True(result.Value!.TargetSizeReached);
+            Assert.False(result.Value.ExceededTarget);
+            Assert.Equal(sourceBytes, result.Value.Bytes);
+            Assert.Equal(File.ReadAllBytes(sourcePath), File.ReadAllBytes(outPath));
         }
         finally
         {
@@ -115,14 +160,16 @@ public sealed class PngCompressionTests
         Directory.CreateDirectory(tempDir);
         try
         {
-            var sourcePath = CreateGradientPng(tempDir, 64, 64);
+            var sourcePath = Path.Combine(AppContext.BaseDirectory, "assets", "transparent.png");
+            Assert.True(File.Exists(sourcePath), $"Missing test asset: {sourcePath}");
             var sourceBytes = new FileInfo(sourcePath).Length;
             var outPath = Path.Combine(tempDir, "out_noop.png");
 
             var codec = new WicImageCodec();
             var req = new ImageEncodeRequest(
                 sourcePath, outPath, ImageFormat.Png, ImageFormat.Png,
-                new ImageTransformOptions(),
+                new ImageTransformOptions(
+                    Background: new ImageBackgroundOptions(true, "#FFFFFF")),
                 new ImageEncodingOptions(ImageOutputFormat.Png, Quality: 100),
                 ImageSafetyLimits.Default);
 
@@ -131,6 +178,7 @@ public sealed class PngCompressionTests
 
             var outBytes = new FileInfo(outPath).Length;
             Assert.True(outBytes <= sourceBytes, $"Output bytes ({outBytes}) must not exceed source bytes ({sourceBytes})");
+            Assert.Equal(File.ReadAllBytes(sourcePath), File.ReadAllBytes(outPath));
         }
         finally
         {
@@ -157,6 +205,9 @@ public sealed class PngCompressionTests
 
             var res = await codec.TransformAndEncodeAsync(req, CancellationToken.None);
             Assert.True(res.IsSuccess);
+            Assert.NotEqual(
+                Convert.ToBase64String(File.ReadAllBytes(sourcePath)),
+                Convert.ToBase64String(File.ReadAllBytes(outPath)));
 
             using var dstImg = new MagickImage(outPath);
             Assert.Equal((uint)100, dstImg.Width);
@@ -188,14 +239,13 @@ public sealed class PngCompressionTests
                 ImageSafetyLimits.Default);
 
             var res = await codec.TransformAndEncodeAsync(req, CancellationToken.None);
-            if (res.IsSuccess)
-            {
-                var outBytes = new FileInfo(outPath).Length;
-                Assert.True(outBytes <= targetBytes);
-                Assert.Equal(80, res.Value!.Metadata.Width);
-                Assert.Equal(80, res.Value!.Metadata.Height);
-                Assert.False(res.Value!.TargetSizeResized);
-            }
+            Assert.True(res.IsSuccess, res.Failure?.UserMessage);
+            Assert.NotNull(res.Value);
+            var outBytes = new FileInfo(outPath).Length;
+            Assert.True(outBytes <= targetBytes);
+            Assert.Equal(80, res.Value!.Metadata.Width);
+            Assert.Equal(80, res.Value.Metadata.Height);
+            Assert.False(res.Value.TargetSizeResized);
         }
         finally
         {
@@ -287,13 +337,12 @@ public sealed class PngCompressionTests
                 ImageSafetyLimits.Default);
 
             var res = await codec.TransformAndEncodeAsync(req, CancellationToken.None);
-            if (res.IsSuccess)
-            {
-                Assert.True(res.Value!.TargetSizeResized);
-                Assert.True(res.Value!.Metadata.Width < 200);
-                Assert.True(res.Value!.Metadata.Height < 200);
-                Assert.NotNull(res.Value!.TargetSizeNotice);
-            }
+            Assert.True(res.IsSuccess, res.Failure?.UserMessage);
+            Assert.NotNull(res.Value);
+            Assert.True(res.Value!.TargetSizeResized);
+            Assert.True(res.Value.Metadata.Width < 200);
+            Assert.True(res.Value.Metadata.Height < 200);
+            Assert.NotNull(res.Value.TargetSizeNotice);
         }
         finally
         {

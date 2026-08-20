@@ -224,7 +224,11 @@ public sealed class WicImageCodecDpiTests
         converted.CopyPixels(pixels, checked(converted.PixelWidth * 4), 0);
         var counts = new System.Collections.Generic.Dictionary<string, int>
         {
-            ["TL"] = 0, ["TR"] = 0, ["BL"] = 0, ["BR"] = 0, ["C"] = 0
+            ["TL"] = 0,
+            ["TR"] = 0,
+            ["BL"] = 0,
+            ["BR"] = 0,
+            ["C"] = 0
         };
         for (var y = 0; y < converted.PixelHeight; y++)
         {
