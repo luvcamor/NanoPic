@@ -300,9 +300,12 @@ public sealed class RealWorldBenchmarkTests
             reportSb.AppendLine("---");
             reportSb.AppendLine("**实机测试结论**: 全部 6 组测试场景均 100% 成功通过，功能符合预期！");
 
-            var reportPath = @"C:\Users\roz\.gemini\antigravity\brain\ffe03d28-c087-4af3-a181-1db70eced268\realworld_benchmark_report.md";
-            File.WriteAllText(reportPath, reportSb.ToString(), Encoding.UTF8);
             _output.WriteLine(reportSb.ToString());
+            var artifactDir = Environment.GetEnvironmentVariable("NANOPIC_REPORT_DIR");
+            if (!string.IsNullOrWhiteSpace(artifactDir) && Directory.Exists(artifactDir))
+            {
+                File.WriteAllText(Path.Combine(artifactDir, "realworld_benchmark_report.md"), reportSb.ToString(), Encoding.UTF8);
+            }
         }
         finally
         {
