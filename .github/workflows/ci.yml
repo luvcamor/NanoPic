@@ -41,7 +41,7 @@ jobs:
           $missing = $required | Where-Object { -not (Test-Path -LiteralPath $_) }
           if ($missing) { throw "Missing release assets: $($missing -join ', ')" }
           $size = (Get-Item -LiteralPath 'artifacts/publish/win-x64/NanoPic.exe').Length
-          if ($size -gt 40000000) { throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes." }
+          if ($size -ge 2000000) { throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes; expected < 2,000,000 B." }
           $expected = (Get-Content 'artifacts/publish/win-x64/NanoPic.exe.sha256' -Raw).Split(' ')[0]
           $actual = (Get-FileHash 'artifacts/publish/win-x64/NanoPic.exe' -Algorithm SHA256).Hash
           if ($actual -ne $expected) { throw 'NanoPic.exe hash does not match NanoPic.exe.sha256.' }

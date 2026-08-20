@@ -52,6 +52,7 @@ public sealed record CompressionSettings(
     int OutputIndex)
 {
     public OutputConflictPolicy ConflictPolicy { get; init; } = OutputConflictPolicy.Overwrite;
+    public bool AllowResizeForTarget { get; init; } = false;
 }
 public sealed record UiSettings(string OutputDirectory);
 public sealed record ProcessingSettings(bool AutoOrient, bool StripMetadata)

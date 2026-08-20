@@ -310,7 +310,9 @@ public sealed class ImageFileProcessingService
                         destination.Value.ReplaceExisting,
                         SkippedExistingOutput: false,
                         AutoDownsampled: resizePlan.AutoDownsampled,
-                        ResizeNotice: resizePlan.Notice));
+                        ResizeNotice: resizePlan.Notice,
+                        TargetSizeResized: encoded.Value.TargetSizeResized,
+                        TargetSizeNotice: encoded.Value.TargetSizeNotice));
             }
         }
         catch (OperationCanceledException)

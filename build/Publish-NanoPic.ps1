@@ -98,8 +98,8 @@ try {
     if ([string]::IsNullOrWhiteSpace($productVersion)) {
         throw 'FAILED-VERSION: the portable executable does not report a product version.'
     }
-    if ($size -gt 40000000) {
-        throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes."
+    if ($size -ge 2000000) {
+        throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes; expected < 2,000,000 B."
     }
 
     [IO.File]::WriteAllText(
@@ -112,7 +112,7 @@ try {
         product = [ordered]@{
             name = 'NanoPic'
             version = $productVersion
-            assemblyVersion = '3.2.1.0'
+            assemblyVersion = '3.2.2.0'
             targetFramework = 'net48'
             runtimeIdentifier = $RuntimeIdentifier
             platform = 'x64'
@@ -147,7 +147,7 @@ try {
             releaseBuildCommand = 'dotnet build NanoPic.sln -c Release --no-restore'
             releaseTestCommand = 'dotnet test NanoPic.sln -c Release --no-build --no-restore'
             portableBuildCommand = './build/Build-NanoPicPortable.ps1 -Configuration Release'
-            sizeGateRule = 'NanoPic.exe <= 40,000,000 B; preferred <= 15,000,000 B'
+            sizeGateRule = 'NanoPic.exe < 2,000,000 B'
         }
     }
     [IO.File]::WriteAllText(

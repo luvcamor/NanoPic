@@ -15,7 +15,7 @@ public sealed class NanoPicV321CodecRegressionTests
     [Theory]
     [InlineData(ImageFormat.Jpeg, true)]
     [InlineData(ImageFormat.Webp, true)]
-    [InlineData(ImageFormat.Png, false)]
+    [InlineData(ImageFormat.Png, true)]
     [InlineData(ImageFormat.Bmp, false)]
     [InlineData(ImageFormat.Gif, false)]
     [InlineData(ImageFormat.Tiff, false)]

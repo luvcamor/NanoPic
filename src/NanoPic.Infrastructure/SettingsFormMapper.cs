@@ -35,7 +35,8 @@ public sealed record SettingsFormState(
     bool MetadataNoteEnabled = false,
     string MetadataNoteText = "",
     bool AutoDownscaleOnExceed = true,
-    string SoftMaxPixels = "200");
+    string SoftMaxPixels = "200",
+    bool AllowResizeForTarget = false);
 
 public static class SettingsFormMapper
 {
@@ -95,7 +96,8 @@ public static class SettingsFormMapper
         settings.MetadataNote.Enabled,
         settings.MetadataNote.Text,
         settings.System.AutoDownscaleOnExceed,
-        (settings.OversizedImage.SoftMaxPixels / 1_000_000).ToString());
+        (settings.OversizedImage.SoftMaxPixels / 1_000_000).ToString(),
+        settings.Compress.AllowResizeForTarget);
     }
 
     public static NanoPicSettings Capture(NanoPicSettings basis, SettingsFormState form)
@@ -139,6 +141,7 @@ public static class SettingsFormMapper
                 UseTargetSize = form.UseTargetSize,
                 TargetBytes = targetValue * unitBytes,
                 AllowExceedTarget = form.AllowExceedTarget,
+                AllowResizeForTarget = form.AllowResizeForTarget,
                 OutputFilenameTemplate = string.IsNullOrWhiteSpace(form.OutputFilenameTemplate)
                     ? "{name}"
                     : form.OutputFilenameTemplate.Trim(),
@@ -195,7 +198,7 @@ public static class ImageProcessingOptionsMapper
                 settings.Compress.OutputFormat,
                 settings.Compress.Quality,
                 settings.Compress.UseTargetSize
-                    ? new TargetSizeOptions(settings.Compress.TargetBytes, settings.Compress.AllowExceedTarget)
+                    ? new TargetSizeOptions(settings.Compress.TargetBytes, settings.Compress.AllowExceedTarget, AllowResizeForTarget: settings.Compress.AllowResizeForTarget)
                     : null),
             new ImageTransformOptions(
                 AutoOrient: settings.Processing.AutoOrient,

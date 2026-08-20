@@ -135,7 +135,8 @@ public sealed record TargetSizeOptions(
     long TargetBytes,
     bool AllowExceed,
     int MinQuality = 1,
-    int MaxQuality = 100);
+    int MaxQuality = 100,
+    bool AllowResizeForTarget = false);
 
 public sealed record ImageEncodingOptions(
     ImageOutputFormat OutputFormat,
@@ -156,7 +157,9 @@ public sealed record ImageEncodedOutput(
     int Quality,
     long Bytes,
     bool TargetSizeReached,
-    bool ExceededTarget);
+    bool ExceededTarget,
+    bool TargetSizeResized = false,
+    string? TargetSizeNotice = null);
 
 public sealed record ImageFileProcessRequest(
     string SourcePath,
@@ -173,7 +176,9 @@ public sealed record ImageFileProcessResult(
     bool ReplacedExistingOutput,
     bool SkippedExistingOutput,
     bool AutoDownsampled = false,
-    string? ResizeNotice = null);
+    string? ResizeNotice = null,
+    bool TargetSizeResized = false,
+    string? TargetSizeNotice = null);
 
 public sealed record ImageBatchProgress(
     int Total,

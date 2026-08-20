@@ -380,7 +380,7 @@ public sealed class LayerBoundaryTests
                     new ImageEncodingOptions(
                         ImageOutputFormat.Jpeg,
                         Quality: 80,
-                        TargetSize: new TargetSizeOptions(TargetBytes: 1024, AllowExceed: false)),
+                        TargetSize: new TargetSizeOptions(TargetBytes: 1024, AllowExceed: false, AllowResizeForTarget: true)),
                     new ImageTransformOptions(),
                     ImageSafetyLimits.Default),
                 CancellationToken.None);

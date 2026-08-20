@@ -368,7 +368,8 @@
                                                 <ComboBoxItem Content="KB"/><ComboBoxItem Content="MB"/>
                                             </ComboBox>
                                         </StackPanel>
-                                        <CheckBox x:Name="AllowExceedCheck" Content="允许超出目标大小" Margin="0,6,0,0" Checked="SettingsChanged" Unchecked="SettingsChanged"/>
+                                        <CheckBox x:Name="AllowExceedCheck" Content="允许超出目标大小" Margin="0,6,0,0" Checked="SettingsChanged" Unchecked="SettingsChanged" ToolTip="无法压缩到目标大小时，保留原尺寸最小候选输出"/>
+                                        <CheckBox x:Name="AllowResizeForTargetCheck" Content="无法达到目标时允许缩小图片尺寸" Margin="0,4,0,0" Checked="SettingsChanged" Unchecked="SettingsChanged" ToolTip="仅在按目标大小且原尺寸无法达到时，允许进一步降低图片分辨率以逼近目标大小"/>
                                     </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource SettingsGroupCardStyle}">
@@ -430,7 +431,7 @@
                                                 <ComboBoxItem Content="500 MP" Tag="500"/>
                                             </ComboBox>
                                         </StackPanel>
-                                        <CheckBox x:Name="AutoDownscaleCheck" Content="超限自动降采样" IsChecked="True" Checked="SettingsChanged" Unchecked="SettingsChanged" ToolTip="当图像像素总数超过上方设置的上限时，自动按比例缩小处理，避免报错中断"/>
+                                        <CheckBox x:Name="AutoDownscaleCheck" Content="超限自动降采样" IsChecked="True" Checked="SettingsChanged" Unchecked="SettingsChanged" ToolTip="仅在图片像素总数超过上方安全上限时自动缩小；与“按目标大小”的尺寸调整无关"/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

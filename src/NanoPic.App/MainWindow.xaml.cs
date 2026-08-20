@@ -542,6 +542,10 @@ public partial class MainWindow : Window
                     {
                         item.Detail = processResult.ResizeNotice ?? string.Empty;
                     }
+                    else if (processResult?.TargetSizeResized == true && !string.IsNullOrWhiteSpace(processResult.TargetSizeNotice))
+                    {
+                        item.Detail = processResult.TargetSizeNotice ?? string.Empty;
+                    }
                 }
                 else
                 {
@@ -1038,10 +1042,53 @@ public partial class MainWindow : Window
         }
 
         var useTargetSize = TargetSizeMode.IsChecked == true;
-        QualityBox.IsEnabled = !useTargetSize;
-        TargetSizeBox.IsEnabled = useTargetSize;
-        TargetSizeUnitBox.IsEnabled = useTargetSize;
-        AllowExceedCheck.IsEnabled = useTargetSize;
+        var formatIndex = FormatBox?.SelectedIndex ?? 0;
+
+        if (useTargetSize)
+        {
+            QualityBox.IsEnabled = false;
+            QualityBox.ToolTip = "按目标大小模式下由系统自动确定最佳压缩策略。";
+            TargetSizeBox.IsEnabled = true;
+            TargetSizeUnitBox.IsEnabled = true;
+            AllowExceedCheck.IsEnabled = true;
+            if (AllowResizeForTargetCheck is not null)
+            {
+                AllowResizeForTargetCheck.IsEnabled = true;
+            }
+        }
+        else
+        {
+            TargetSizeBox.IsEnabled = false;
+            TargetSizeUnitBox.IsEnabled = false;
+            AllowExceedCheck.IsEnabled = false;
+            if (AllowResizeForTargetCheck is not null)
+            {
+                AllowResizeForTargetCheck.IsEnabled = false;
+            }
+
+            // 按输出格式定制 QualityBox 状态与提示
+            if (formatIndex is 0 or 2) // JPEG, WebP
+            {
+                QualityBox.IsEnabled = true;
+                QualityBox.ToolTip = "质量越大图片越清晰，文件体积越大（推荐 75–85）。";
+            }
+            else if (formatIndex == 1) // PNG
+            {
+                QualityBox.IsEnabled = true;
+                QualityBox.ToolTip = "PNG 质量用于颜色优化；100 为无损，数值越低通常体积越小，图片宽高不变。";
+            }
+            else if (formatIndex is 3 or 4 or 5 or 6) // GIF, BMP, TIFF, ICO
+            {
+                QualityBox.IsEnabled = false;
+                QualityBox.ToolTip = "所选输出格式不支持质量调节。";
+            }
+            else // 原格式 (7)
+            {
+                QualityBox.IsEnabled = true;
+                QualityBox.ToolTip = "质量设置仅对 JPEG/WebP/PNG 生效。";
+            }
+        }
+
         WidthBox.IsEnabled = ResizeCheck.IsChecked == true;
         HeightBox.IsEnabled = ResizeCheck.IsChecked == true;
         PreserveAspectCheck.IsEnabled = ResizeCheck.IsChecked == true;
@@ -1072,6 +1119,10 @@ public partial class MainWindow : Window
         TargetSizeBox.Text = form.TargetSizeKilobytes;
         TargetSizeUnitBox.SelectedIndex = form.TargetSizeInMegabytes ? 1 : 0;
         AllowExceedCheck.IsChecked = form.AllowExceedTarget;
+        if (AllowResizeForTargetCheck is not null)
+        {
+            AllowResizeForTargetCheck.IsChecked = form.AllowResizeForTarget;
+        }
         ResizeCheck.IsChecked = form.ResizeEnabled;
         WidthBox.Text = form.Width;
         HeightBox.Text = form.Height;
@@ -1171,7 +1222,8 @@ public partial class MainWindow : Window
         MetadataNoteCheck.IsChecked == true,
         MetadataNoteBox.Text,
         AutoDownscaleCheck.IsChecked == true,
-        SoftMaxPixelsBox.SelectedItem is ComboBoxItem selectedItem && selectedItem.Tag is string tag ? tag : "200"));
+        SoftMaxPixelsBox.SelectedItem is ComboBoxItem selectedItem && selectedItem.Tag is string tag ? tag : "200",
+        AllowResizeForTargetCheck?.IsChecked == true));
 }
 
 public sealed class QueueItem : INotifyPropertyChanged
