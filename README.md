@@ -9,7 +9,7 @@
 [![Release](https://img.shields.io/github/v/release/luvcamor/NanoPic?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/luvcamor/NanoPic/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/luvcamor/NanoPic/total?label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD)](https://github.com/luvcamor/NanoPic/releases)
 
-[下载正式版](https://github.com/luvcamor/NanoPic/releases/latest) · [问题反馈](https://github.com/luvcamor/NanoPic/issues)
+[下载正式版](https://github.com/luvcamor/NanoPic/releases/latest) · [使用说明](docs/USER-GUIDE.md) · [问题反馈](https://github.com/luvcamor/NanoPic/issues)
 
 </div>
 
@@ -40,7 +40,7 @@ NanoPic 是一款 Windows 上的图片压缩和转换小工具。把图片拖进
 
 ## 怎么用
 
-1. 去 [Releases](https://github.com/luvcamor/NanoPic/releases/latest) 下载并解压
+1. 去 [Releases](https://github.com/luvcamor/NanoPic/releases/latest) 下载 `NanoPic.exe`；如果下载的是便携压缩包，请先解压
 2. 双击运行 `NanoPic.exe`
 3. 把图片拖进窗口，或点「添加文件 / 打开文件夹」
 4. 选好格式、大小等设置
