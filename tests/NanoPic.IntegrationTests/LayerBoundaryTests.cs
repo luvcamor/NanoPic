@@ -119,6 +119,122 @@ public sealed class LayerBoundaryTests
         }
     }
 
+    [Theory]
+    [InlineData(".jfif", MagickFormat.Jpeg, ImageOutputFormat.Original, ".jfif", ImageFormat.Jpeg)]
+    [InlineData(".JPEG", MagickFormat.Jpeg, ImageOutputFormat.Original, ".JPEG", ImageFormat.Jpeg)]
+    [InlineData(".jpe", MagickFormat.Jpeg, ImageOutputFormat.Original, ".jpe", ImageFormat.Jpeg)]
+    [InlineData(".tif", MagickFormat.Tiff, ImageOutputFormat.Original, ".tif", ImageFormat.Tiff)]
+    [InlineData(".PNG", MagickFormat.Png, ImageOutputFormat.Original, ".PNG", ImageFormat.Png)]
+    [InlineData(".jfif", MagickFormat.Jpeg, ImageOutputFormat.Jpeg, ".jpg", ImageFormat.Jpeg)]
+    [InlineData(".tif", MagickFormat.Tiff, ImageOutputFormat.Tiff, ".tiff", ImageFormat.Tiff)]
+    [InlineData(".jfif", MagickFormat.Jpeg, ImageOutputFormat.Webp, ".webp", ImageFormat.Webp)]
+    [InlineData(".jfif", MagickFormat.Png, ImageOutputFormat.Original, ".png", ImageFormat.Png)]
+    public async Task Process_preserves_matching_source_extension_only_for_original_output(
+        string sourceExtension,
+        MagickFormat sourceFormat,
+        ImageOutputFormat requestedFormat,
+        string expectedExtension,
+        ImageFormat expectedFormat)
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-OriginalExtension-");
+        try
+        {
+            var sourcePath = Path.Combine(directory.FullName, "source" + sourceExtension);
+            using (var source = new MagickImage(MagickColors.Blue, 32, 16))
+            {
+                source.Write(sourcePath, sourceFormat);
+            }
+            var sourceBytes = File.ReadAllBytes(sourcePath);
+
+            var result = await new ImageFileProcessingService(new WicImageCodec()).ProcessAsync(
+                new ImageFileProcessRequest(
+                    sourcePath,
+                    Path.Combine(directory.FullName, "result.jpg"),
+                    new ImageEncodingOptions(requestedFormat, Quality: 80),
+                    new ImageTransformOptions(),
+                    ImageSafetyLimits.Default),
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess, $"{result.Failure?.UserMessage}{Environment.NewLine}{result.Failure?.Exception}");
+            Assert.Equal(Path.Combine(directory.FullName, "result" + expectedExtension), result.Value?.OutputPath);
+            using var outputStream = File.OpenRead(result.Value!.OutputPath);
+            var signature = await ImageFileSignatureInspector.DetectAsync(outputStream, CancellationToken.None);
+            Assert.Equal(expectedFormat, signature.Value);
+            using var decoded = new MagickImage(result.Value.OutputPath);
+            Assert.Equal(32u, decoded.Width);
+            Assert.Equal(16u, decoded.Height);
+            Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(OutputConflictPolicy.Fail)]
+    [InlineData(OutputConflictPolicy.Skip)]
+    [InlineData(OutputConflictPolicy.Overwrite)]
+    [InlineData(OutputConflictPolicy.AutoRename)]
+    public async Task Process_original_output_applies_conflict_policy_to_preserved_extension(OutputConflictPolicy policy)
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-OriginalConflict-");
+        try
+        {
+            var sourcePath = Path.Combine(directory.FullName, "source.jfif");
+            using (var source = new MagickImage(MagickColors.Blue, 32, 16))
+            {
+                source.Write(sourcePath, MagickFormat.Jpeg);
+            }
+            var sourceBytes = File.ReadAllBytes(sourcePath);
+
+            var result = await new ImageFileProcessingService(new WicImageCodec()).ProcessAsync(
+                new ImageFileProcessRequest(
+                    sourcePath,
+                    sourcePath,
+                    new ImageEncodingOptions(ImageOutputFormat.Original, Quality: 60),
+                    new ImageTransformOptions(),
+                    ImageSafetyLimits.Default,
+                    policy),
+                CancellationToken.None);
+
+            if (policy == OutputConflictPolicy.Fail)
+            {
+                Assert.False(result.IsSuccess);
+                Assert.Equal(ImageFailureKind.FileAccessConflict, result.Failure?.Kind);
+            }
+            else
+            {
+                Assert.True(result.IsSuccess, result.Failure?.UserMessage);
+                Assert.Equal(policy == OutputConflictPolicy.Skip, result.Value!.SkippedExistingOutput);
+                Assert.Equal(policy == OutputConflictPolicy.Overwrite, result.Value.ReplacedExistingOutput);
+                if (policy == OutputConflictPolicy.AutoRename)
+                {
+                    Assert.NotEqual(sourcePath, result.Value.OutputPath);
+                    Assert.EndsWith(".jfif", result.Value.OutputPath, StringComparison.Ordinal);
+                }
+                else
+                {
+                    Assert.Equal(sourcePath, result.Value.OutputPath);
+                }
+                using var decoded = new MagickImage(result.Value.OutputPath);
+                Assert.Equal(MagickFormat.Jpeg, decoded.Format);
+            }
+
+            if (policy != OutputConflictPolicy.Overwrite)
+            {
+                Assert.Equal(sourceBytes, File.ReadAllBytes(sourcePath));
+            }
+            Assert.Empty(Directory.EnumerateFiles(directory.FullName, "*.jpg"));
+            Assert.Empty(Directory.EnumerateFiles(directory.FullName, "*.tmp"));
+            Assert.Equal(policy == OutputConflictPolicy.AutoRename ? 2 : 1, Directory.GetFiles(directory.FullName).Length);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Unreachable_target_size_returns_structured_failure_and_leaves_no_output()
     {

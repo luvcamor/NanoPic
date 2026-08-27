@@ -110,7 +110,7 @@ public partial class MainWindow : Window
 
     private async void AddFiles_Click(object sender, RoutedEventArgs e)
     {
-        var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Filter = "图像文件|*.jpg;*.jpeg;*.png;*.webp;*.gif;*.bmp;*.tif;*.tiff;*.ico|所有文件|*.*" };
+        var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Filter = "图像文件|*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.webp;*.gif;*.bmp;*.tif;*.tiff;*.ico|所有文件|*.*" };
         if (dialog.ShowDialog(this) == true)
         {
             await AddPathsAsync(dialog.FileNames);
@@ -708,7 +708,9 @@ public partial class MainWindow : Window
         if (format == ImageFormat.Unknown) return ImageOperationResult<string>.Failed(ImageFailureKind.UnsupportedFormat, "无法识别输入文件格式。");
         var overwrite = OverwriteOutput.IsChecked.GetValueOrDefault();
         var mode = overwrite ? OutputDirectoryMode.SourceDirectory : PreserveOutput.IsChecked.GetValueOrDefault() ? OutputDirectoryMode.PreserveDirectoryStructure : OutputDirectoryMode.SeparateDirectory;
-        return OutputPathPlanner.Plan(new OutputPathPlanRequest(sourcePath, inputRoot, outputRoot, mode, overwrite ? "{name}" : filenameTemplate, format, index));
+        return OutputPathPlanner.Plan(new OutputPathPlanRequest(
+            sourcePath, inputRoot, outputRoot, mode, overwrite ? "{name}" : filenameTemplate, format, index,
+            PreserveSourceExtension: requested == ImageOutputFormat.Original));
     }
 
     private static ImageFormat DetectFormatForPath(string path)
@@ -793,6 +795,13 @@ public partial class MainWindow : Window
 
     private void About_Click(object sender, RoutedEventArgs e)
     {
+        var about = CreateAboutWindow();
+        about.Owner = this;
+        about.ShowDialog();
+    }
+
+    private Window CreateAboutWindow()
+    {
         var version = typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?.Split('+')[0] ?? typeof(MainWindow).Assembly.GetName().Version?.ToString(3)
             ?? "3.0";
@@ -829,18 +838,33 @@ public partial class MainWindow : Window
         });
         content.Children.Add(new TextBlock
         {
-            Text = ".NET Framework 4.8 WPF 图像压缩工具",
+            Text = "轻量便携的图片压缩与格式转换工具",
             FontSize = 12,
+            TextWrapping = TextWrapping.Wrap,
             Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush")
         });
         content.Children.Add(new TextBlock
         {
-            Text = "核心图像引擎：Windows WIC + libwebp 1.6.0",
-            Margin = new Thickness(0, 4, 0, 14),
+            Text = "• 批量压缩与转换，支持拖入图片和文件夹\n"
+                + "• 按质量或目标大小压缩，支持保留原格式\n"
+                + "• 支持 JPEG、PNG、WebP、GIF、BMP、TIFF、ICO\n"
+                + "• 可调整尺寸、亮度、水印与输出文件名\n"
+                + "• 单文件便携运行，图片全程在本地处理",
+            Margin = new Thickness(0, 10, 0, 14),
             FontSize = 12,
+            LineHeight = 22,
+            TextWrapping = TextWrapping.Wrap,
             Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush")
         });
-        var feedback = new TextBlock { FontSize = 12, Text = "问题反馈：" };
+        var feedback = new TextBlock
+        {
+            FontSize = 12,
+            Text = "问题反馈：",
+            LineHeight = 20,
+            TextWrapping = TextWrapping.Wrap,
+            Foreground = (System.Windows.Media.Brush)FindResource("TextPrimaryBrush")
+        };
+        feedback.Inlines.Add(new LineBreak());
         feedback.Inlines.Add(link);
         content.Children.Add(feedback);
         var okButton = new System.Windows.Controls.Button { Content = "确定", Width = 88, HorizontalAlignment = System.Windows.HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
@@ -851,13 +875,12 @@ public partial class MainWindow : Window
             SizeToContent = SizeToContent.Height,
             ResizeMode = ResizeMode.NoResize,
             WindowStartupLocation = WindowStartupLocation.CenterOwner,
-            Owner = this,
             Background = (System.Windows.Media.Brush)FindResource("AppBackgroundBrush"),
             Content = content
         };
         okButton.Click += (_, _) => about.Close();
         content.Children.Add(okButton);
-        about.ShowDialog();
+        return about;
     }
 
     private void OutputMode_Changed(object sender, RoutedEventArgs e)

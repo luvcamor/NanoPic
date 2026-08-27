@@ -29,6 +29,31 @@ public sealed class ImageContractsTests
         Assert.Equal(expected, result.Value);
     }
 
+    [Theory]
+    [InlineData(ImageFormat.Jpeg, "sample.jfif", true, ".jfif")]
+    [InlineData(ImageFormat.Jpeg, "sample.JPEG", true, ".JPEG")]
+    [InlineData(ImageFormat.Jpeg, "sample.jpe", true, ".jpe")]
+    [InlineData(ImageFormat.Jpeg, "sample.JPG", true, ".JPG")]
+    [InlineData(ImageFormat.Tiff, "sample.tif", true, ".tif")]
+    [InlineData(ImageFormat.Tiff, "sample.TIFF", true, ".TIFF")]
+    [InlineData(ImageFormat.Png, "sample.PNG", true, ".PNG")]
+    [InlineData(ImageFormat.Webp, "sample.WEBP", true, ".WEBP")]
+    [InlineData(ImageFormat.Gif, "sample.GIF", true, ".GIF")]
+    [InlineData(ImageFormat.Bmp, "sample.BMP", true, ".BMP")]
+    [InlineData(ImageFormat.Ico, "sample.ICO", true, ".ICO")]
+    [InlineData(ImageFormat.Jpeg, "sample.jfif", false, ".jpg")]
+    [InlineData(ImageFormat.Tiff, "sample.tif", false, ".tiff")]
+    [InlineData(ImageFormat.Png, "sample.PNG", false, ".png")]
+    [InlineData(ImageFormat.Png, "sample.jfif", true, ".png")]
+    [InlineData(ImageFormat.Jpeg, "sample.bin", true, ".jpg")]
+    [InlineData(ImageFormat.Jpeg, "sample", true, ".jpg")]
+    [InlineData(ImageFormat.Unknown, "sample.jfif", true, "")]
+    public void Output_extension_preserves_only_matching_source_suffixes_when_requested(
+        ImageFormat format, string sourcePath, bool preserveSourceExtension, string expected)
+    {
+        Assert.Equal(expected, ImageFileSignatureInspector.GetOutputExtension(format, sourcePath, preserveSourceExtension));
+    }
+
     [Fact]
     public void Detect_identifies_webp_from_riff_and_webp_markers()
     {

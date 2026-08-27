@@ -130,14 +130,19 @@ public sealed class SupportedImageFileScanner
 
 public static class OutputNameTemplate
 {
-    public static ImageOperationResult<string> Render(string template, string sourcePath, ImageFormat outputFormat, int index)
+    public static ImageOperationResult<string> Render(
+        string template,
+        string sourcePath,
+        ImageFormat outputFormat,
+        int index,
+        bool preserveSourceExtension = false)
     {
         if (index < 1 || !File.Exists(sourcePath))
         {
             return ImageOperationResult<string>.Failed(ImageFailureKind.InvalidConfiguration, "输出命名模板、输入文件或序号无效。");
         }
 
-        var extension = ImageFileSignatureInspector.GetCanonicalExtension(outputFormat);
+        var extension = ImageFileSignatureInspector.GetOutputExtension(outputFormat, sourcePath, preserveSourceExtension);
         if (string.IsNullOrEmpty(extension))
         {
             return ImageOperationResult<string>.Failed(ImageFailureKind.UnsupportedFormat, "输出格式没有可用的文件扩展名。");

@@ -403,6 +403,46 @@ public sealed class InfrastructureTests
         }
     }
 
+    [Theory]
+    [InlineData(OutputDirectoryMode.SourceDirectory, true)]
+    [InlineData(OutputDirectoryMode.SourceDirectory, false)]
+    [InlineData(OutputDirectoryMode.SeparateDirectory, true)]
+    [InlineData(OutputDirectoryMode.SeparateDirectory, false)]
+    [InlineData(OutputDirectoryMode.PreserveDirectoryStructure, true)]
+    [InlineData(OutputDirectoryMode.PreserveDirectoryStructure, false)]
+    public void Output_path_planner_uses_selected_extension_for_filename_and_ext_token(
+        OutputDirectoryMode mode, bool preserveSourceExtension)
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-OriginalPath-");
+        try
+        {
+            var inputRoot = Path.Combine(directory.FullName, "input");
+            var sourceDirectory = Path.Combine(inputRoot, "nested");
+            var outputRoot = Path.Combine(directory.FullName, "output");
+            Directory.CreateDirectory(sourceDirectory);
+            var sourcePath = Path.Combine(sourceDirectory, "image.jfif");
+            File.WriteAllBytes(sourcePath, new byte[] { 0xFF, 0xD8, 0xFF, 0xD9 });
+
+            var result = OutputPathPlanner.Plan(new OutputPathPlanRequest(
+                sourcePath, inputRoot, outputRoot, mode, "{name}_{index}_{ext}", ImageFormat.Jpeg, 2,
+                PreserveSourceExtension: preserveSourceExtension));
+
+            var expectedDirectory = mode switch
+            {
+                OutputDirectoryMode.SourceDirectory => sourceDirectory,
+                OutputDirectoryMode.SeparateDirectory => outputRoot,
+                _ => Path.Combine(outputRoot, "nested")
+            };
+            var extension = preserveSourceExtension ? "jfif" : "jpg";
+            Assert.True(result.IsSuccess, result.Failure?.UserMessage);
+            Assert.Equal(Path.Combine(expectedDirectory, $"image_2_{extension}.{extension}"), result.Value);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Default_logger_redacts_file_paths()
     {

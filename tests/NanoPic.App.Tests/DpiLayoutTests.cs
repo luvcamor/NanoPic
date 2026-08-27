@@ -1,8 +1,10 @@
 using System.IO;
+using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Documents;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using Xunit;
@@ -16,12 +18,66 @@ public sealed class DpiLayoutTests
     [InlineData(192, 1640, 1080)]
     public void MinimumWindow_RendersWithoutCriticalControlClipping(int dpi, int expectedPixelWidth, int expectedPixelHeight)
     {
+        RunOnSta(() => VerifyMinimumWindowAtDpi(dpi, expectedPixelWidth, expectedPixelHeight));
+    }
+
+    [Theory]
+    [InlineData(96)]
+    [InlineData(144)]
+    [InlineData(192)]
+    public void AboutWindow_FeaturesAndFeedbackRenderWithoutClipping(int dpi)
+    {
+        RunOnSta(() =>
+        {
+            var window = new MainWindow();
+            var factory = typeof(MainWindow).GetMethod("CreateAboutWindow", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(factory);
+            var about = Assert.IsType<Window>(factory.Invoke(window, null));
+            var content = Assert.IsAssignableFrom<FrameworkElement>(about.Content);
+            about.Content = null;
+            var surface = new Border { Background = about.Background, Child = content };
+            var logicalWidth = about.Width - 2 * SystemParameters.ResizeFrameVerticalBorderWidth;
+            surface.Measure(new Size(logicalWidth, double.PositiveInfinity));
+            var logicalHeight = surface.DesiredSize.Height;
+            surface.Arrange(new Rect(0, 0, logicalWidth, logicalHeight));
+            surface.UpdateLayout();
+
+            var textBlocks = FindVisualDescendants<TextBlock>(surface).ToArray();
+            foreach (var textBlock in textBlocks)
+            {
+                AssertCriticalElementWithin(surface, textBlock, logicalWidth, logicalHeight);
+            }
+            var link = Assert.Single(textBlocks.SelectMany(block => block.Inlines.OfType<Hyperlink>()));
+            Assert.Equal("https://github.com/luvcamor/NanoPic/issues", link.NavigateUri.AbsoluteUri);
+            Assert.True(link.Focusable);
+            Assert.True(link.IsEnabled);
+            AssertCriticalElementWithin(surface, FindVisualDescendants<Button>(surface).Single(), logicalWidth, logicalHeight);
+
+            var evidenceDirectory = Environment.GetEnvironmentVariable("NANOPIC_DPI_EVIDENCE_DIR");
+            if (!string.IsNullOrWhiteSpace(evidenceDirectory))
+            {
+                Directory.CreateDirectory(evidenceDirectory);
+                var bitmap = new RenderTargetBitmap(
+                    (int)Math.Ceiling(logicalWidth * dpi / 96d),
+                    (int)Math.Ceiling(logicalHeight * dpi / 96d),
+                    dpi, dpi, PixelFormats.Pbgra32);
+                bitmap.Render(surface);
+                var encoder = new PngBitmapEncoder();
+                encoder.Frames.Add(BitmapFrame.Create(bitmap));
+                using var stream = File.Create(Path.Combine(evidenceDirectory, $"about-features-dpi-{dpi * 100 / 96}.png"));
+                encoder.Save(stream);
+            }
+        });
+    }
+
+    private static void RunOnSta(Action action)
+    {
         ExceptionDispatchInfo? failure = null;
         var thread = new Thread(() =>
         {
             try
             {
-                VerifyMinimumWindowAtDpi(dpi, expectedPixelWidth, expectedPixelHeight);
+                action();
             }
             catch (Exception exception)
             {

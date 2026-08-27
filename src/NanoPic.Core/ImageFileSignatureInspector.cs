@@ -154,6 +154,26 @@ public static class ImageFileSignatureInspector
         _ => string.Empty
     };
 
+    public static string GetOutputExtension(ImageFormat format, string sourcePath, bool preserveSourceExtension)
+    {
+        var canonicalExtension = GetCanonicalExtension(format);
+        if (!preserveSourceExtension || string.IsNullOrEmpty(canonicalExtension))
+        {
+            return canonicalExtension;
+        }
+
+        // Only preserve extensions that match the detected format, never a misleading suffix.
+        var sourceExtension = Path.GetExtension(sourcePath);
+        var matchesFormat = format switch
+        {
+            ImageFormat.Jpeg => sourceExtension.ToLowerInvariant() is ".jpg" or ".jpeg" or ".jpe" or ".jfif",
+            ImageFormat.Tiff => sourceExtension.ToLowerInvariant() is ".tif" or ".tiff",
+            _ => string.Equals(sourceExtension, canonicalExtension, StringComparison.OrdinalIgnoreCase)
+        };
+
+        return matchesFormat ? sourceExtension : canonicalExtension;
+    }
+
     public static ImageFormat ToImageFormat(ImageOutputFormat outputFormat, ImageFormat sourceFormat) => outputFormat switch
     {
         ImageOutputFormat.Original => sourceFormat,

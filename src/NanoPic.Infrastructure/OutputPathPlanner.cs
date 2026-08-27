@@ -16,7 +16,8 @@ public sealed record OutputPathPlanRequest(
     OutputDirectoryMode Mode,
     string FilenameTemplate,
     ImageFormat OutputFormat,
-    int Index);
+    int Index,
+    bool PreserveSourceExtension = false);
 
 public static class OutputPathPlanner
 {
@@ -28,7 +29,12 @@ public static class OutputPathPlanner
             return ImageOperationResult<string>.Failed(ImageFailureKind.FileAccessConflict, "输入文件不存在，无法规划输出路径。");
         }
 
-        var fileName = OutputNameTemplate.Render(request.FilenameTemplate, request.SourcePath, request.OutputFormat, request.Index);
+        var fileName = OutputNameTemplate.Render(
+            request.FilenameTemplate,
+            request.SourcePath,
+            request.OutputFormat,
+            request.Index,
+            request.PreserveSourceExtension);
         if (!fileName.IsSuccess || fileName.Value is null)
         {
             return new ImageOperationResult<string>(default, fileName.Failure);

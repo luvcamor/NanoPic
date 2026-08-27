@@ -204,7 +204,7 @@ public sealed class ImageFileProcessingService
                     "所选输出格式不受当前编解码器支持。");
             }
 
-            var requestedDestination = ApplyCanonicalExtension(request.DestinationPath, outputFormat);
+            var requestedDestination = ApplyOutputExtension(request, outputFormat);
             var destination = await PrepareDestinationAsync(
                 requestedDestination,
                 request.ConflictPolicy,
@@ -471,15 +471,18 @@ public sealed class ImageFileProcessingService
         throw new IOException("无法完成输出文件落盘。");
     }
 
-    private static string ApplyCanonicalExtension(string requestedPath, ImageFormat outputFormat)
+    private static string ApplyOutputExtension(ImageFileProcessRequest request, ImageFormat outputFormat)
     {
-        var extension = ImageFileSignatureInspector.GetCanonicalExtension(outputFormat);
+        var extension = ImageFileSignatureInspector.GetOutputExtension(
+            outputFormat,
+            request.SourcePath,
+            preserveSourceExtension: request.Encoding.OutputFormat == ImageOutputFormat.Original);
         if (string.IsNullOrEmpty(extension))
         {
             throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, "输出格式没有受支持的扩展名。");
         }
 
-        return Path.ChangeExtension(requestedPath, extension);
+        return Path.ChangeExtension(request.DestinationPath, extension);
     }
 
     private static string CreateTemporaryPath(string destinationPath)

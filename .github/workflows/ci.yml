@@ -43,6 +43,7 @@ jobs:
           $required = @(
             'artifacts/publish/win-x64/NanoPic.exe',
             'artifacts/publish/win-x64/NanoPic.exe.sha256',
+            'artifacts/publish/win-x64/LICENSE',
             'artifacts/publish/win-x64/THIRD-PARTY-NOTICES.txt',
             'artifacts/publish/win-x64/licenses/BSD-3-CLAUSE-LIBWEBP.txt',
             'artifacts/publish/win-x64/licenses/MIT-MANAGED-DEPENDENCIES.txt',
@@ -58,12 +59,18 @@ jobs:
           $actual = (Get-FileHash 'artifacts/publish/win-x64/NanoPic.exe' -Algorithm SHA256).Hash
           if ($actual -ne $expected) { throw 'NanoPic.exe hash does not match NanoPic.exe.sha256.' }
           $manifest = Get-Content 'artifacts/publish/win-x64/manifest.json' -Raw | ConvertFrom-Json
+          $executable = (Resolve-Path 'artifacts/publish/win-x64/NanoPic.exe').Path
+          $productVersion = (Get-Item -LiteralPath $executable).VersionInfo.ProductVersion.Split('+')[0]
+          $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($executable).Version.ToString()
+          if ($manifest.product.version -ne $productVersion) { throw 'Manifest product version does not match NanoPic.exe.' }
+          if ($manifest.product.assemblyVersion -ne $assemblyVersion) { throw 'Manifest assembly version does not match NanoPic.exe.' }
           if ($manifest.product.targetFramework -ne 'net48') { throw 'Manifest target framework is not net48.' }
           if ($manifest.product.selfContained -ne $false) { throw 'Manifest incorrectly declares a self-contained .NET runtime.' }
           if ($manifest.product.codecBackend -ne 'Windows WIC + libwebp 1.6.0') { throw 'Manifest codec backend is incorrect.' }
           if ($manifest.primaryArtifact.sizeBytes -ne $size) { throw 'Manifest size does not match NanoPic.exe.' }
           if ($manifest.primaryArtifact.sha256 -ne $actual) { throw 'Manifest hash does not match NanoPic.exe.' }
           $sbom = Get-Content 'artifacts/publish/win-x64/SBOM.spdx.json' -Raw | ConvertFrom-Json
+          if ($sbom.packages[0].versionInfo -ne $productVersion) { throw 'SBOM application version does not match NanoPic.exe.' }
           if ('libwebp' -notin @($sbom.packages.name)) { throw 'SBOM does not contain libwebp.' }
           if ('System.Text.Json' -notin @($sbom.packages.name)) { throw 'SBOM does not contain managed runtime dependencies.' }
           $forbidden = @(Get-ChildItem 'artifacts/publish/win-x64' -File | Where-Object {

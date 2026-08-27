@@ -30,6 +30,7 @@ $portableScript = Join-Path $PSScriptRoot 'Build-NanoPicPortable.ps1'
 $portableDirectory = Join-Path $repositoryRoot "artifacts/portable/$RuntimeIdentifier"
 $portableExecutable = Join-Path $portableDirectory 'NanoPic.exe'
 $licenseSource = Join-Path $PSScriptRoot 'release-assets/licenses'
+$projectLicenseSource = Join-Path $repositoryRoot 'LICENSE'
 $noticeSource = Join-Path $repositoryRoot 'src/NanoPic.App/THIRD-PARTY-NOTICES.txt'
 $sbomTemplate = Join-Path $PSScriptRoot 'release-assets/SBOM.spdx.template.json'
 $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
@@ -39,6 +40,7 @@ foreach ($requiredSource in @(
     $nugetConfig,
     $portableScript,
     $licenseSource,
+    $projectLicenseSource,
     $noticeSource,
     $sbomTemplate
 )) {
@@ -81,6 +83,7 @@ try {
 
     $executable = Join-Path $publishDirectory 'NanoPic.exe'
     Copy-Item -LiteralPath $portableExecutable -Destination $executable
+    Copy-Item -LiteralPath $projectLicenseSource -Destination (Join-Path $publishDirectory 'LICENSE')
     Copy-Item -LiteralPath $noticeSource -Destination (Join-Path $publishDirectory 'THIRD-PARTY-NOTICES.txt')
 
     $publishLicenseDirectory = Join-Path $publishDirectory 'licenses'
@@ -98,6 +101,7 @@ try {
     if ([string]::IsNullOrWhiteSpace($productVersion)) {
         throw 'FAILED-VERSION: the portable executable does not report a product version.'
     }
+    $assemblyVersion = [Reflection.AssemblyName]::GetAssemblyName($executable).Version.ToString()
     if ($size -ge 2000000) {
         throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes; expected < 2,000,000 B."
     }
@@ -112,7 +116,7 @@ try {
         product = [ordered]@{
             name = 'NanoPic'
             version = $productVersion
-            assemblyVersion = '3.2.2.0'
+            assemblyVersion = $assemblyVersion
             targetFramework = 'net48'
             runtimeIdentifier = $RuntimeIdentifier
             platform = 'x64'
@@ -135,6 +139,7 @@ try {
         releaseFiles = @(
             'NanoPic.exe',
             'NanoPic.exe.sha256',
+            'LICENSE',
             'THIRD-PARTY-NOTICES.txt',
             'licenses/BSD-3-CLAUSE-LIBWEBP.txt',
             'licenses/MIT-MANAGED-DEPENDENCIES.txt',
@@ -172,6 +177,7 @@ try {
     $requiredReleaseFiles = @(
         'NanoPic.exe',
         'NanoPic.exe.sha256',
+        'LICENSE',
         'THIRD-PARTY-NOTICES.txt',
         'licenses/BSD-3-CLAUSE-LIBWEBP.txt',
         'licenses/MIT-MANAGED-DEPENDENCIES.txt',
