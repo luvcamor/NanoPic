@@ -13,11 +13,11 @@
       },
       "Microsoft.NET.Test.Sdk": {
         "type": "Direct",
-        "requested": "[17.12.0, )",
-        "resolved": "17.12.0",
-        "contentHash": "kt/PKBZ91rFCWxVIJZSgVLk+YR+4KxTuHf799ho8WNiK5ZQpJNAEZCAWX86vcKrs+DiYjiibpYKdGZP6+/N17w==",
+        "requested": "[18.9.0, )",
+        "resolved": "18.9.0",
+        "contentHash": "xIzVXa/VpKXqDWzyC/5Hw8JbFY5u9k3Jc53CpcjBiOXvkQGio484LD9FNwOiGUSMDcYL3Rcw9sNgGi5WrswlPQ==",
         "dependencies": {
-          "Microsoft.CodeCoverage": "17.12.0"
+          "Microsoft.CodeCoverage": "18.9.0"
         }
       },
       "Microsoft.NETFramework.ReferenceAssemblies": {
@@ -64,8 +64,8 @@
       },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
-        "resolved": "17.12.0",
-        "contentHash": "4svMznBd5JM21JIG2xZKGNanAHNXplxf/kQDFfLHXQ3OnpJkayRK/TjacFjA+EYmoyuNXHo/sOETEfcYtAzIrA=="
+        "resolved": "18.9.0",
+        "contentHash": "MtegCIKGuG0r/LCdIjoR1HgzCGIUBhR3aNdbtQpts5vMXQuqBDZ2Jsd2uFKoHFM2XrQV6ZrDf3F5oLi3SLTp8w=="
       },
       "Microsoft.NETFramework.ReferenceAssemblies.net48": {
         "type": "Transitive",
@@ -184,7 +184,7 @@
       "nanopic.codecs": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.2.2, )"
+          "NanoPic.Core": "[3.2.4, )"
         }
       },
       "nanopic.core": {
@@ -193,7 +193,7 @@
       "nanopic.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.2.2, )",
+          "NanoPic.Core": "[3.2.4, )",
           "System.Text.Json": "[8.0.5, )"
         }
       },
