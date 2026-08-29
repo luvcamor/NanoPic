@@ -14,13 +14,58 @@ jobs:
     timeout-minutes: 30
 
     steps:
+      # actions 按 commit SHA 固定（防可变 tag 供应链劫持）；升级由 Dependabot 跟进。
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v6
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           global-json-file: global.json
+
+      - name: Verify embedded libwebp binaries against official release
+        shell: pwsh
+        run: |
+          $codecSource = Get-Content src/NanoPic.Codecs/LibWebpTools.cs -Raw
+          $url = [regex]::Match($codecSource, 'SourceUrl = "([^"]+)"').Groups[1].Value
+          $archiveSha256 = [regex]::Match($codecSource, 'ArchiveSha256 = "([0-9A-Fa-f]+)"').Groups[1].Value
+          if (-not $url -or -not $archiveSha256) { throw 'Unable to read libwebp source url or archive hash from LibWebpTools.cs.' }
+
+          $zipPath = Join-Path $env:RUNNER_TEMP 'libwebp-official.zip'
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
+          $actualArchiveSha256 = (Get-FileHash $zipPath -Algorithm SHA256).Hash
+          if ($actualArchiveSha256 -ne $archiveSha256) { throw "Official libwebp archive hash mismatch: $actualArchiveSha256 (expected $archiveSha256)." }
+
+          $expectedToolHashes = @{
+            'cwebp.exe' = [regex]::Match($codecSource, 'CwebpSha256 = "([0-9A-Fa-f]+)"').Groups[1].Value
+            'dwebp.exe' = [regex]::Match($codecSource, 'DwebpSha256 = "([0-9A-Fa-f]+)"').Groups[1].Value
+          }
+          foreach ($name in $expectedToolHashes.Keys) {
+            if (-not $expectedToolHashes[$name]) { throw "Unable to read $name hash from LibWebpTools.cs." }
+          }
+
+          # 校验官方 zip 内的工具与代码常量一致，再校验仓库提交的二进制与官方 zip 一致。
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [IO.Compression.ZipFile]::OpenRead($zipPath)
+          try {
+            foreach ($name in $expectedToolHashes.Keys) {
+              $entry = $archive.Entries | Where-Object { $_.Name -eq $name }
+              if (-not $entry) { throw "Official archive does not contain $name." }
+              $entryStream = $entry.Open()
+              try {
+                $sha256 = [Security.Cryptography.SHA256]::Create()
+                $actual = ([BitConverter]::ToString($sha256.ComputeHash($entryStream)) -replace '-', '')
+              } finally { $entryStream.Dispose() }
+              if ($actual -ne $expectedToolHashes[$name]) { throw "Official $name hash mismatch: $actual (expected $($expectedToolHashes[$name]))." }
+            }
+          } finally { $archive.Dispose() }
+
+          foreach ($name in $expectedToolHashes.Keys) {
+            $committed = (Get-FileHash "src/NanoPic.Codecs/Native/libwebp-1.6.0/$name" -Algorithm SHA256).Hash
+            if ($committed -ne $expectedToolHashes[$name]) { throw "Committed $name does not match the official libwebp release." }
+          }
+
+          Write-Host 'Embedded libwebp binaries match the official release.'
 
       - name: Build, test, and publish net48 single-executable release
         shell: pwsh
@@ -79,14 +124,14 @@ jobs:
           if ($forbidden.Count -ne 0) { throw "Forbidden runtime files: $($forbidden.Name -join ', ')" }
 
       - name: Upload release audit bundle
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: NanoPic-win-x64
           path: artifacts/publish/win-x64
           if-no-files-found: error
 
       - name: Upload test and security reports
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: NanoPic-test-reports
           path: artifacts/test-reports

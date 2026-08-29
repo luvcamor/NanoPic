@@ -1,0 +1,11 @@
+version: 2
+updates:
+  # GitHub Actions 以 commit SHA 固定引用， Dependabot 负责 follow-up 升级并更新 SHA。
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "nuget"
+    directory: "/"
+    schedule:
+      interval: "weekly"
