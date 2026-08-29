@@ -194,11 +194,14 @@ public static class OutputNameTemplate
 }
 
 public sealed class RedactingFileLogger
-{
-    // 匹配 Windows 驱动器路径、UNC 路径（\\server\share 或 \\?\）、以及 Unix 绝对路径
-    private static readonly Regex PathPattern = new(
-        @"(?i)(?:\\\\(?:\?|\.)\\[^\s\r\n""'<>|]+|\\\\[a-z0-9_$.-]+\\[^\s\r\n""'<>|]+|[a-z]:\\[^\s\r\n""'<>|]+|/(?:Users|home|tmp|var|etc)/[^\s\r\n""'<>|]+)",
-        RegexOptions.Compiled);
+    {
+        // 匹配 Windows 驱动器路径、UNC 路径（\\server\share 或 \\?\）、以及 Unix 绝对路径。
+        // 路径段允许空格（Windows 用户目录普遍含空格）；引号与常见中文标点作为路径边界，
+        // .NET 异常消息中带引号的路径可被精确截断；裸路径后的行内尾随文本可能一并被吞掉，
+        // 属"宁多脱敏不泄露"的取舍，完整原文请开启 VerbosePaths。
+        private static readonly Regex PathPattern = new(
+            @"(?i)(?:\\\\(?:\?|\.)\\[^\r\n""'<>|，。；：！？]+|\\\\[a-z0-9_$.-]+\\[^\r\n""'<>|，。；：！？]+|[a-z]:\\[^\r\n""'<>|，。；：！？]+|/(?:Users|home|tmp|var|etc)/[^\r\n""'<>|，。；：！？]+)",
+            RegexOptions.Compiled);
 
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private const long MaxLogFileSizeBytes = 10L * 1024L * 1024L;

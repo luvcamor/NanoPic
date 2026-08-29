@@ -187,6 +187,42 @@ public sealed class PngCompressionTests
     }
 
     [Fact]
+    public async Task C3c_NoOp_Bmp_Avoids_Expansion_Via_SkipIfLarger()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), "nanopic-bmp-noop-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            // palette.bmp 是 8 位调色板图：WIC 重编码为 24 位 BMP 后体积约膨胀 4 倍（151KB → 614KB），
+            // 无 skip-if-larger 保护时 no-op 压缩反而会显著增大文件。
+            var assetPath = Path.Combine(AppContext.BaseDirectory, "assets", "palette.bmp");
+            Assert.True(File.Exists(assetPath), $"Missing test asset: {assetPath}");
+            var sourcePath = Path.Combine(tempDir, "palette-in.bmp");
+            File.Copy(assetPath, sourcePath);
+
+            var sourceBytes = new FileInfo(sourcePath).Length;
+
+            var outPath = Path.Combine(tempDir, "out_noop.bmp");
+            var codec = new WicImageCodec();
+            var req = new ImageEncodeRequest(
+                sourcePath, outPath, ImageFormat.Bmp, ImageFormat.Bmp,
+                new ImageTransformOptions(),
+                new ImageEncodingOptions(ImageOutputFormat.Bmp, Quality: 80),
+                ImageSafetyLimits.Default);
+
+            var res = await codec.TransformAndEncodeAsync(req, CancellationToken.None);
+            Assert.True(res.IsSuccess, res.Failure?.UserMessage);
+
+            Assert.Equal(sourceBytes, new FileInfo(outPath).Length);
+            Assert.Equal(File.ReadAllBytes(sourcePath), File.ReadAllBytes(outPath));
+        }
+        finally
+        {
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+        }
+    }
+
+    [Fact]
     public async Task C4_Png_With_Watermark_Does_Not_Skip()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), "nanopic-png-wm-" + Guid.NewGuid().ToString("N"));

@@ -226,7 +226,12 @@ internal static class LibWebpTools
             var error = standardErrorTask.GetAwaiter().GetResult();
             if (process.ExitCode != 0)
             {
-                throw new LibWebpToolException(failureMessage + " " + Sanitize(error));
+                var detail = Sanitize(error);
+                // dwebp 对动画 WebP 返回特征错误（UNSUPPORTED_FEATURE），给出可行动的提示而非笼统失败。
+                var message = detail.IndexOf("animated webp", StringComparison.OrdinalIgnoreCase) >= 0
+                    ? "暂不支持动画 WebP：文件包含动画帧，请先用 webpmux 抽取单帧后再压缩。"
+                    : failureMessage + " " + detail;
+                throw new LibWebpToolException(message);
             }
 
             return output;

@@ -17,6 +17,44 @@ public sealed class LayerBoundaryTests
     }
 
     [Fact]
+    public async Task Multipage_tiff_to_jpeg_reports_dropped_frame_notice()
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-FrameNotice-");
+        try
+        {
+            var sourcePath = Path.Combine(directory.FullName, "multi.tiff");
+            using (var collection = new MagickImageCollection())
+            {
+                collection.Add(new MagickImage(MagickColors.Red, 16, 16));
+                collection.Add(new MagickImage(MagickColors.Blue, 16, 16));
+                collection.Add(new MagickImage(MagickColors.Lime, 16, 16));
+                collection.Write(sourcePath);
+            }
+
+            var service = new ImageFileProcessingService(new WicImageCodec());
+            var result = await service.ProcessAsync(
+                new ImageFileProcessRequest(
+                    sourcePath,
+                    Path.Combine(directory.FullName, "out.jpg"),
+                    new ImageEncodingOptions(ImageOutputFormat.Jpeg, Quality: 90),
+                    new ImageTransformOptions(),
+                    ImageSafetyLimits.Default,
+                    OutputConflictPolicy.Fail),
+                CancellationToken.None);
+
+            Assert.True(result.IsSuccess, $"{result.Failure?.UserMessage}{Environment.NewLine}{result.Failure?.Exception}");
+            Assert.Equal(3, result.Value?.Source.FrameCount);
+            Assert.Equal(1, result.Value?.Output?.Metadata.FrameCount);
+            Assert.False(string.IsNullOrWhiteSpace(result.Value?.FrameNotice));
+            Assert.Contains("3", result.Value?.FrameNotice);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Process_atomically_replaces_source_file_in_place_when_overwrite_is_selected()
     {
         var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-InPlace-");

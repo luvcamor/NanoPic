@@ -302,6 +302,12 @@ public sealed class ImageFileProcessingService
                     request.ConflictPolicy);
                 temporaryPath = string.Empty;
 
+                // 仅 GIF/TIFF 输出保留多帧（见编解码器 PrepareFrames）；其余格式只编码第一帧，
+                // 必须显式告知用户发生了帧丢弃，避免静默数据丢失。
+                var frameNotice = sourceMetadata.FrameCount > 1 && outputFormat is not (ImageFormat.Gif or ImageFormat.Tiff)
+                    ? $"源文件包含 {sourceMetadata.FrameCount} 帧，输出仅保留第一帧。"
+                    : null;
+
                 return ImageOperationResult<ImageFileProcessResult>.Success(
                     new ImageFileProcessResult(
                         committedPath,
@@ -312,7 +318,8 @@ public sealed class ImageFileProcessingService
                         AutoDownsampled: resizePlan.AutoDownsampled,
                         ResizeNotice: resizePlan.Notice,
                         TargetSizeResized: encoded.Value.TargetSizeResized,
-                        TargetSizeNotice: encoded.Value.TargetSizeNotice));
+                        TargetSizeNotice: encoded.Value.TargetSizeNotice,
+                        FrameNotice: frameNotice));
             }
         }
         catch (OperationCanceledException)

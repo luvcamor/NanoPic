@@ -40,6 +40,7 @@ public partial class MainWindow : Window
     private Task _settingsLoadTask = Task.CompletedTask;
     private bool _closeInProgress;
     private bool _closeCommitted;
+    private readonly Dictionary<string, Window> _previewWindows = new(StringComparer.OrdinalIgnoreCase);
 
     public MainWindow()
     {
@@ -253,6 +254,11 @@ public partial class MainWindow : Window
     private async void PreviewHighlighted()
     {
         if (QueueGrid.SelectedItem is not QueueItem item || !File.Exists(item.Path)) return;
+        if (_previewWindows.TryGetValue(item.Path, out var existingPreview))
+        {
+            existingPreview.Activate();
+            return;
+        }
         var temporaryPath = Path.Combine(Path.GetTempPath(), $"nanopic-preview-{Guid.NewGuid():N}.png");
         try
         {
@@ -379,6 +385,15 @@ public partial class MainWindow : Window
                 Content = new System.Windows.Controls.Image { Source = image, Stretch = Stretch.Uniform }
             };
             System.Windows.Automation.AutomationProperties.SetName(preview, $"图片预览：{item.FileName}");
+            preview.PreviewKeyDown += (_, e) =>
+            {
+                if (e.Key == System.Windows.Input.Key.Escape)
+                {
+                    preview.Close();
+                }
+            };
+            _previewWindows[item.Path] = preview;
+            preview.Closed += (_, _) => _previewWindows.Remove(item.Path);
             preview.Show();
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
@@ -537,7 +552,30 @@ public partial class MainWindow : Window
                 if (result.IsSuccess)
                 {
                     var processResult = result.Value;
-                    item.MarkSuccess(processResult?.Output?.ExceededTarget == true, processResult?.OutputPath, processResult?.SkippedExistingOutput == true);
+                    item.MarkSuccess(
+                        processResult?.Output?.ExceededTarget == true,
+                        processResult?.OutputPath,
+                        processResult?.SkippedExistingOutput == true,
+                        processResult?.FrameNotice);
+                    if (processResult?.FrameNotice is { } frameNotice)
+                    {
+                        // 状态列对"完成（保留首帧）"展开详情区，显示具体丢帧提示而非输出路径。
+                        item.Detail = frameNotice;
+                    }
+                    if (processResult?.OutputPath is { } outputPath && string.Equals(outputPath, item.Path, StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 覆盖原文件模式：输出写回了源文件本身，刷新队列中的大小显示。
+                        try
+                        {
+                            item.UpdateBytes(new FileInfo(outputPath).Length);
+                        }
+                        catch (IOException)
+                        {
+                        }
+                        catch (UnauthorizedAccessException)
+                        {
+                        }
+                    }
                     if (processResult?.AutoDownsampled == true && !string.IsNullOrWhiteSpace(processResult.ResizeNotice))
                     {
                         item.Detail = processResult.ResizeNotice ?? string.Empty;
@@ -715,8 +753,29 @@ public partial class MainWindow : Window
 
     private static ImageFormat DetectFormatForPath(string path)
     {
+        // 同步读取 32 字节文件头做签名识别：此前对 UI 线程做异步阻塞（GetAwaiter().GetResult()），
+        // 在慢速网络路径上会冻结界面；签名检测本身有同步 API，直接调用即可。
         using var stream = File.OpenRead(path);
-        return ImageFileSignatureInspector.DetectAsync(stream, CancellationToken.None).GetAwaiter().GetResult().Value;
+        var header = new byte[32];
+        var read = 0;
+        while (read < header.Length)
+        {
+            var count = stream.Read(header, read, header.Length - read);
+            if (count == 0)
+            {
+                break;
+            }
+
+            read += count;
+        }
+
+        if (read < header.Length)
+        {
+            Array.Resize(ref header, read);
+        }
+
+        var detected = ImageFileSignatureInspector.Detect(header);
+        return detected.IsSuccess ? detected.Value : ImageFormat.Unknown;
     }
 
     private bool TryBuildOptions(out ImageEncodingOptions encoding, out ImageTransformOptions transforms, out string failure)
@@ -885,12 +944,27 @@ public partial class MainWindow : Window
 
     private void OutputMode_Changed(object sender, RoutedEventArgs e)
     {
-        if (OutputDirectoryBox is null || OverwriteOutput is null)
+        if (OutputDirectoryBox is null || OverwriteOutput is null ||
+            FilenamePresetBox is null || FilenameTemplateBox is null || OutputIndexBox is null || ConflictPolicyBox is null)
         {
             return;
         }
 
-        OutputDirectoryBox.IsEnabled = !OverwriteOutput.IsChecked.GetValueOrDefault();
+        // 覆盖原文件模式下输出固定为“原文件名写回源目录”，以下设置不会生效，禁用并说明原因。
+        var overwrite = OverwriteOutput.IsChecked.GetValueOrDefault();
+        OutputDirectoryBox.IsEnabled = !overwrite;
+        FilenamePresetBox.IsEnabled = !overwrite;
+        FilenameTemplateBox.IsEnabled = !overwrite;
+        OutputIndexBox.IsEnabled = !overwrite;
+        ConflictPolicyBox.IsEnabled = !overwrite;
+
+        var overwriteHint = "覆盖原文件模式下不生效：输出固定使用原文件名写入源文件所在目录。";
+        FilenamePresetBox.ToolTip = overwrite ? overwriteHint : "选择输出文件的命名方式";
+        FilenameTemplateBox.ToolTip = overwrite
+            ? overwriteHint
+            : "可用占位符：{name} 原文件名、{index} 序号、{ext} 格式、{date} 日期、{time} 时间；日期时间取文件的修改时间";
+        OutputIndexBox.ToolTip = overwrite ? overwriteHint : null;
+        ConflictPolicyBox.ToolTip = overwrite ? overwriteHint : "重复压缩同一文件时如何处理已有输出";
         RefreshUi();
     }
 
@@ -1257,7 +1331,7 @@ public sealed class QueueItem : INotifyPropertyChanged
     private ImageFailureKind? _failureKind;
     public QueueItem(string path, long bytes) { Path = path; Bytes = bytes; }
     public string Path { get; }
-    public long Bytes { get; }
+    public long Bytes { get; private set; }
     public string FileName => System.IO.Path.GetFileName(Path);
     public string Directory => System.IO.Path.GetDirectoryName(Path) ?? string.Empty;
     public string SizeText => $"{Bytes / 1024d:N1} KB";
@@ -1268,9 +1342,26 @@ public sealed class QueueItem : INotifyPropertyChanged
     public bool IsProcessing => string.Equals(_status, "处理中", StringComparison.Ordinal);
     public bool IsPending => string.Equals(_status, "等待", StringComparison.Ordinal);
 
+    public void UpdateBytes(long bytes)
+    {
+        if (bytes <= 0 || Bytes == bytes) return;
+        Bytes = bytes;
+        OnPropertyChanged(nameof(Bytes));
+        OnPropertyChanged(nameof(SizeText));
+    }
+
     public void MarkPending() { _failureKind = null; Status = "等待"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkProcessing() { _failureKind = null; Status = "处理中"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
-    public void MarkSuccess(bool exceededTarget, string? outputPath, bool skipped) { _failureKind = null; Status = skipped ? "已跳过" : exceededTarget ? "完成（已超限）" : "完成"; Detail = outputPath ?? string.Empty; OnPropertyChanged(nameof(HasFailure)); }
+    public void MarkSuccess(bool exceededTarget, string? outputPath, bool skipped, string? frameNotice = null)
+    {
+        _failureKind = null;
+        Status = skipped ? "已跳过"
+            : exceededTarget ? "完成（已超限）"
+            : frameNotice is null ? "完成"
+            : "完成（保留首帧）";
+        Detail = outputPath ?? string.Empty;
+        OnPropertyChanged(nameof(HasFailure));
+    }
     public void MarkFailure(ImageFailureKind kind, string message) { _failureKind = kind; Status = kind == ImageFailureKind.TaskCanceled ? "已取消" : "失败"; Detail = message; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkCanceled() => MarkFailure(ImageFailureKind.TaskCanceled, "已取消");
     public event PropertyChangedEventHandler? PropertyChanged; private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));

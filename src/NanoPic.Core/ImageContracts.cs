@@ -178,7 +178,8 @@ public sealed record ImageFileProcessResult(
     bool AutoDownsampled = false,
     string? ResizeNotice = null,
     bool TargetSizeResized = false,
-    string? TargetSizeNotice = null);
+    string? TargetSizeNotice = null,
+    string? FrameNotice = null);
 
 public sealed record ImageBatchProgress(
     int Total,

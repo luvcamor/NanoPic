@@ -145,13 +145,28 @@ public sealed class NanoPicV321IntegrationTests
     [Fact]
     public void RedactingLogger_RedactsUncAndSpecialPaths()
     {
+        // 裸路径后的尾随文本会被一并吞掉：路径段允许空格后无法与行内后续文字区分，按"宁多脱敏"处理。
         var message1 = @"Processing \\server\share\folder\image.png failed";
         var message2 = @"Processing \\?\C:\VeryLongPath\image.png failed";
         var message3 = @"Processing C:\Users\Alice\Pictures\test.jpg completed";
 
-        Assert.Equal("Processing <path> failed", RedactingFileLogger.Redact(message1));
-        Assert.Equal("Processing <path> failed", RedactingFileLogger.Redact(message2));
-        Assert.Equal("Processing <path> completed", RedactingFileLogger.Redact(message3));
+        Assert.Equal("Processing <path>", RedactingFileLogger.Redact(message1));
+        Assert.Equal("Processing <path>", RedactingFileLogger.Redact(message2));
+        Assert.Equal("Processing <path>", RedactingFileLogger.Redact(message3));
+    }
+
+    [Fact]
+    public void RedactingLogger_RedactsPathsWithSpaces()
+    {
+        // .NET 异常消息中路径通常带引号，应精确截断并保留路径外的说明文字（含外侧引号）。
+        var quoted = "Access to the path 'C:\\Users\\Foo Bar\\图片 1.png' is denied.";
+        Assert.Equal("Access to the path '<path>' is denied.", RedactingFileLogger.Redact(quoted));
+
+        var quotedCn = "对路径 \"C:\\Users\\李四 的 相册\\photo.png\" 的访问被拒绝。";
+        Assert.Equal("对路径 \"<path>\" 的访问被拒绝。", RedactingFileLogger.Redact(quotedCn));
+
+        var bare = "读取 C:\\Users\\Foo Bar\\img.png 时出错";
+        Assert.Equal("读取 <path>", RedactingFileLogger.Redact(bare));
     }
 
     private sealed class DelayedCodec : IImageCodec

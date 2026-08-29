@@ -245,11 +245,11 @@ public sealed class WicImageCodec : IImageCodec
                 var targetSizeResized = false;
                 string? targetSizeNotice = null;
                 var outputAlreadyWritten = false;
-                var canReusePngSource = CanReuseSourceFile(request, preparation);
+                var canReuseSource = CanReuseSourceFile(request, preparation);
 
                 if (request.Encoding.TargetSize is { } targetSize)
                 {
-                    if (request.OutputFormat == ImageFormat.Png && canReusePngSource)
+                    if (canReuseSource)
                     {
                         var sourceFileBytes = new FileInfo(request.SourcePath).Length;
                         if (sourceFileBytes > 0 && sourceFileBytes <= targetSize.TargetBytes)
@@ -582,7 +582,7 @@ public sealed class WicImageCodec : IImageCodec
                 }
 
                 // skip-if-larger: 纯 no-op 重编码若变大则保留源文件
-                if (canReusePngSource)
+                if (canReuseSource)
                 {
                     var sourceFileBytes = new FileInfo(request.SourcePath).Length;
                     if (bytes >= sourceFileBytes && sourceFileBytes > 0)
@@ -696,8 +696,10 @@ public sealed class WicImageCodec : IImageCodec
                 pixelsChanged = true;
             }
 
-            var shouldFlatten = !SupportsAlpha(outputFormat) &&
-                (HasAlpha(prepared) || transform.Background is { FlattenTransparency: true });
+            // 仅当图像确有透明通道且输出格式不支持 alpha 时才压平。
+            // 不透明图像无条件压平会把像素标记为"已修改"，令 no-op 重编码绕过 skip-if-larger 保护，
+            // 8 位调色板 BMP 等格式会被重编码显著膨胀（151KB → 614KB）。
+            var shouldFlatten = !SupportsAlpha(outputFormat) && HasAlpha(prepared);
             if (shouldFlatten)
             {
                 var background = transform.Background?.ColorHex ?? "#FFFFFF";
@@ -1166,7 +1168,9 @@ public sealed class WicImageCodec : IImageCodec
         ImageEncodeRequest request,
         FramePreparationResult preparation)
     {
-        if (request.SourceFormat != ImageFormat.Png || request.OutputFormat != ImageFormat.Png)
+        // 像素与元数据均未变化时，重编码同格式输出只会带来体积波动（BMP/GIF 等可能显著膨胀），
+        // 因此所有同格式 no-op 都允许走 skip-if-larger 保留源文件字节。
+        if (request.SourceFormat != request.OutputFormat)
         {
             return false;
         }

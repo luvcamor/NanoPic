@@ -248,6 +248,11 @@
                                                 <Setter TargetName="StatusPill" Property="Background" Value="#FFF5DB"/>
                                                 <Setter TargetName="StatusText" Property="Foreground" Value="#A15C00"/>
                                             </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="完成（保留首帧）">
+                                                <Setter TargetName="StatusPill" Property="Background" Value="#FFF5DB"/>
+                                                <Setter TargetName="StatusText" Property="Foreground" Value="#A15C00"/>
+                                                <Setter TargetName="ErrorText" Property="Visibility" Value="Visible"/>
+                                            </DataTrigger>
                                             <DataTrigger Binding="{Binding Status}" Value="已跳过">
                                                 <Setter TargetName="StatusPill" Property="Background" Value="#F1F5F9"/>
                                                 <Setter TargetName="StatusText" Property="Foreground" Value="#64748B"/>
@@ -302,7 +307,8 @@
                         <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                             <TextBlock Text="输出模式:" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}"
                                        VerticalAlignment="Center" Margin="0,0,8,0"/>
-                            <RadioButton x:Name="OverwriteOutput" Content="覆盖原文件" Checked="OutputMode_Changed" Margin="0,0,14,0"/>
+                            <RadioButton x:Name="OverwriteOutput" Content="覆盖原文件" Checked="OutputMode_Changed" Margin="0,0,14,0"
+                                         ToolTip="输出写入源文件所在目录：输出格式与原格式相同时直接覆盖原文件；不同时在原目录生成新格式文件（原文件保留）。此模式下命名与重复输出设置不生效。"/>
                             <RadioButton x:Name="PreserveOutput" Content="保留文件夹结构" Checked="OutputMode_Changed" Margin="0,0,14,0"/>
                             <RadioButton x:Name="SeparateOutput" Content="输出到单独文件夹" IsChecked="True" Checked="OutputMode_Changed"/>
                         </StackPanel>
