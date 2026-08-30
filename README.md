@@ -10,7 +10,7 @@
 [![Downloads](https://img.shields.io/github/downloads/luvcamor/NanoPic/total?label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD)](https://github.com/luvcamor/NanoPic/releases)
 <div align="center">
 
-[![Give a Star](https://img.shields.io/badge/Star%20This%20Repo-⭐-yellow?style=for-the-badge&logo=github)](https://github.com/你的用户名/你的项目名/stargazers)
+[![Give a Star](https://img.shields.io/badge/Star%20This%20Repo-⭐-yellow?style=for-the-badge&logo=github)](https://github.com/luvcamor/nanopic/stargazers)
 
 </div>
 
@@ -55,10 +55,8 @@ NanoPic 是一款 Windows 上的图片压缩和转换小工具。把图片拖进
 
 遇到问题欢迎到 [GitHub Issues](https://github.com/luvcamor/NanoPic/issues) 提出来，或通过程序「关于」页面里的「联系作者」入口反馈。
 
-### ⭐️ 喜欢这个项目吗？
+## ⭐️ 喜欢这个项目吗？
 如果这个项目对你有帮助，欢迎给一个 **Star** 给予支持！你的支持是持续更新的动力 🚀
-
-[![Star on GitHub](https://img.shields.io/github/stars/luvcamor/nanopic?style=social)](https://github.com/luvcamor/nanopic)
 
 ## 许可
 
