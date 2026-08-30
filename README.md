@@ -55,6 +55,11 @@ NanoPic 是一款 Windows 上的图片压缩和转换小工具。把图片拖进
 
 遇到问题欢迎到 [GitHub Issues](https://github.com/luvcamor/NanoPic/issues) 提出来，或通过程序「关于」页面里的「联系作者」入口反馈。
 
+### ⭐️ 喜欢这个项目吗？
+如果这个项目对你有帮助，欢迎给一个 **Star** 给予支持！你的支持是持续更新的动力 🚀
+
+[![Star on GitHub](https://img.shields.io/github/stars/luvcamor/nanopic?style=social)](https://github.com/luvcamor/nanopic)
+
 ## 许可
 
 本项目开源，详见 [LICENSE](LICENSE)。
