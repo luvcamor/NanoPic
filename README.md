@@ -8,7 +8,11 @@
 
 [![Release](https://img.shields.io/github/v/release/luvcamor/NanoPic?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/luvcamor/NanoPic/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/luvcamor/NanoPic/total?label=%E7%B4%AF%E8%AE%A1%E4%B8%8B%E8%BD%BD)](https://github.com/luvcamor/NanoPic/releases)
-[![Star History Chart](https://api.star-history.com/svg?repos=luvcamor/nanopic&type=Date)](https://star-history.com/#luvcamor/nanopic&Date)
+<div align="center">
+
+[![Give a Star](https://img.shields.io/badge/Star%20This%20Repo-⭐-yellow?style=for-the-badge&logo=github)](https://github.com/你的用户名/你的项目名/stargazers)
+
+</div>
 
 [下载正式版](https://github.com/luvcamor/NanoPic/releases/latest) · [问题反馈](https://github.com/luvcamor/NanoPic/issues)
 
