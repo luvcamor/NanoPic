@@ -366,6 +366,13 @@ public partial class MainWindow : Window
                 System.Windows.MessageBox.Show(this, "无法预览所选图片。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
+            if (encoded.Value?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
+            {
+                await WriteLogAsync(
+                    "WARN",
+                    $"预览已自动清理不兼容元数据（{encoded.Value.MetadataFallbackLevel}）。{encoded.Value.MetadataFallbackNotice}",
+                    null);
+            }
 
             var image = new BitmapImage();
             image.BeginInit();
@@ -556,33 +563,32 @@ public partial class MainWindow : Window
                         processResult?.Output?.ExceededTarget == true,
                         processResult?.OutputPath,
                         processResult?.SkippedExistingOutput == true,
-                        processResult?.FrameNotice);
-                    if (processResult?.FrameNotice is { } frameNotice)
+                        processResult?.FrameNotice,
+                        processResult?.Output?.MetadataFallbackNotice);
+                    if (processResult is not null)
                     {
-                        // 状态列对"完成（保留首帧）"展开详情区，显示具体丢帧提示而非输出路径。
-                        item.Detail = frameNotice;
-                    }
-                    if (processResult?.OutputPath is { } outputPath && string.Equals(outputPath, item.Path, StringComparison.OrdinalIgnoreCase))
-                    {
-                        // 覆盖原文件模式：输出写回了源文件本身，刷新队列中的大小显示。
-                        try
+                        item.Detail = BuildSuccessDetail(processResult);
+                        if (processResult.Output?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
                         {
-                            item.UpdateBytes(new FileInfo(outputPath).Length);
+                            await WriteLogAsync(
+                                "WARN",
+                                $"图像编码已自动清理不兼容元数据（{processResult.Output.MetadataFallbackLevel}）。{processResult.Output.MetadataFallbackNotice}",
+                                null);
                         }
-                        catch (IOException)
+                        if (string.Equals(processResult.OutputPath, item.Path, StringComparison.OrdinalIgnoreCase))
                         {
+                            // 覆盖原文件模式：输出写回了源文件本身，刷新队列中的大小显示。
+                            try
+                            {
+                                item.UpdateBytes(new FileInfo(processResult.OutputPath).Length);
+                            }
+                            catch (IOException)
+                            {
+                            }
+                            catch (UnauthorizedAccessException)
+                            {
+                            }
                         }
-                        catch (UnauthorizedAccessException)
-                        {
-                        }
-                    }
-                    if (processResult?.AutoDownsampled == true && !string.IsNullOrWhiteSpace(processResult.ResizeNotice))
-                    {
-                        item.Detail = processResult.ResizeNotice ?? string.Empty;
-                    }
-                    else if (processResult?.TargetSizeResized == true && !string.IsNullOrWhiteSpace(processResult.TargetSizeNotice))
-                    {
-                        item.Detail = processResult.TargetSizeNotice ?? string.Empty;
                     }
                 }
                 else
@@ -593,9 +599,22 @@ public partial class MainWindow : Window
                 }
             }
 
+            var metadataFallbacks = batch.Items
+                .Where(result => result.IsSuccess && result.Value?.Output?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
+                .Select(result => result.Value!.Output!.MetadataFallbackLevel)
+                .ToArray();
+            var metadataFallbackSummary = metadataFallbacks.Length == 0
+                ? string.Empty
+                : $"，元数据清理 {metadataFallbacks.Length}";
             Progress.Value = 100;
-            ProgressText.Text = $"成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}，共 {selected.Length}";
-            await WriteLogAsync("INFO", $"批处理完成：总数 {selected.Length}，成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}。", null);
+            ProgressText.Text = $"成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}{metadataFallbackSummary}，共 {selected.Length}";
+            var levelSummary = metadataFallbacks.Length == 0
+                ? ""
+                : "，降级分布 " + string.Join(", ", metadataFallbacks
+                    .GroupBy(level => level)
+                    .OrderBy(group => group.Key)
+                    .Select(group => $"{group.Key}={group.Count()}"));
+            await WriteLogAsync("INFO", $"批处理完成：总数 {selected.Length}，成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}{levelSummary}。", null);
         }
         catch (OperationCanceledException)
         {
@@ -623,8 +642,8 @@ public partial class MainWindow : Window
                 item.MarkFailure(ImageFailureKind.Unknown, "批处理发生未预期错误。");
             }
             ProgressText.Text = "批处理发生错误。";
-            await WriteLogAsync("ERROR", $"批处理发生未捕获异常：{exception.Message}", exception);
-            System.Windows.MessageBox.Show(this, $"处理过程中发生错误：{exception.Message}", "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            await WriteLogAsync("ERROR", "批处理发生未捕获异常。", exception);
+            System.Windows.MessageBox.Show(this, "处理过程中发生未预期错误，请查看日志了解详情。", "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -662,6 +681,33 @@ public partial class MainWindow : Window
         {
             ProgressText.Text = gpu.Message;
         }
+    }
+
+    private static string BuildSuccessDetail(ImageFileProcessResult result)
+    {
+        var details = new List<string>();
+        if (!string.IsNullOrWhiteSpace(result.FrameNotice))
+        {
+            details.Add(result.FrameNotice!);
+        }
+        if (result.AutoDownsampled && !string.IsNullOrWhiteSpace(result.ResizeNotice))
+        {
+            details.Add(result.ResizeNotice!);
+        }
+        if (result.TargetSizeResized && !string.IsNullOrWhiteSpace(result.TargetSizeNotice))
+        {
+            details.Add(result.TargetSizeNotice!);
+        }
+        if (result.Output?.MetadataFallbackNotice is { } metadataFallbackNotice &&
+            !string.IsNullOrWhiteSpace(metadataFallbackNotice))
+        {
+            details.Add(metadataFallbackNotice);
+        }
+        if (details.Count == 0)
+        {
+            details.Add(result.OutputPath);
+        }
+        return string.Join(Environment.NewLine, details);
     }
 
     private static string GetDefaultLogPath() => Path.Combine(
@@ -863,7 +909,7 @@ public partial class MainWindow : Window
     {
         var version = typeof(MainWindow).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion
             ?.Split('+')[0] ?? typeof(MainWindow).Assembly.GetName().Version?.ToString(3)
-            ?? "3.0";
+            ?? "未知";
         var link = new Hyperlink(new Run("GitHub Issues（github.com/luvcamor/NanoPic/issues）"))
         {
             NavigateUri = new Uri("https://github.com/luvcamor/NanoPic/issues")
@@ -1352,11 +1398,18 @@ public sealed class QueueItem : INotifyPropertyChanged
 
     public void MarkPending() { _failureKind = null; Status = "等待"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkProcessing() { _failureKind = null; Status = "处理中"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
-    public void MarkSuccess(bool exceededTarget, string? outputPath, bool skipped, string? frameNotice = null)
+    public void MarkSuccess(
+        bool exceededTarget,
+        string? outputPath,
+        bool skipped,
+        string? frameNotice = null,
+        string? metadataFallbackNotice = null)
     {
         _failureKind = null;
         Status = skipped ? "已跳过"
+            : exceededTarget && metadataFallbackNotice is not null ? "完成（已超限，已清理元数据）"
             : exceededTarget ? "完成（已超限）"
+            : metadataFallbackNotice is not null ? "完成（已清理元数据）"
             : frameNotice is null ? "完成"
             : "完成（保留首帧）";
         Detail = outputPath ?? string.Empty;

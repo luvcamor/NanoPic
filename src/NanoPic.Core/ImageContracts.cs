@@ -31,6 +31,7 @@ public enum ImageFailureKind
     DecodeFailed,
     PixelBudgetExceeded,
     TargetSizeUnreachable,
+    EncodeFailed,
     OutputVerificationFailed,
     FileAccessConflict,
     TaskCanceled,
@@ -38,6 +39,15 @@ public enum ImageFailureKind
     LegacyUnimplemented,
     InvalidConfiguration,
     Unknown
+}
+
+public enum ImageMetadataFallbackLevel
+{
+    Full = 0,
+    WithoutThumbnail,
+    WithoutThumbnailAndColorContexts,
+    SafeMetadata,
+    WithoutSourceMetadata
 }
 
 public enum OutputConflictPolicy
@@ -159,7 +169,10 @@ public sealed record ImageEncodedOutput(
     bool TargetSizeReached,
     bool ExceededTarget,
     bool TargetSizeResized = false,
-    string? TargetSizeNotice = null);
+    string? TargetSizeNotice = null,
+    ImageMetadataFallbackLevel MetadataFallbackLevel = ImageMetadataFallbackLevel.Full,
+    string? MetadataFallbackNotice = null,
+    bool OrientationCouldNotBePreserved = false);
 
 public sealed record ImageFileProcessRequest(
     string SourcePath,

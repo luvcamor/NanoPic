@@ -464,6 +464,38 @@ public sealed class InfrastructureTests
         }
     }
 
+    [Fact]
+    public async Task Default_logger_records_only_safe_metadata_fallback_diagnostics()
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-Log-Metadata-");
+        try
+        {
+            var logPath = Path.Combine(directory.FullName, "app.log");
+            var logger = new RedactingFileLogger(logPath);
+            var exception = new AggregateException(
+                "unsafe C:\\Users\\Roz\\Private\\photo.jpg",
+                new IOException("private metadata value"));
+            exception.Data["NanoPic.SafeDiagnostic"] =
+                "Full:COMException:0x88982F8E;SafeMetadata:COMException:0x88982F8E";
+
+            await logger.WriteAsync(
+                "ERROR",
+                "JPEG 编码失败：C:\\Users\\Roz\\Private\\photo.jpg",
+                exception,
+                CancellationToken.None);
+            var log = await TestCompatibility.ReadAllTextAsync(logPath);
+
+            Assert.Contains("Full:COMException:0x88982F8E", log);
+            Assert.Contains("SafeMetadata:COMException:0x88982F8E", log);
+            Assert.DoesNotContain("C:\\Users\\Roz\\Private\\photo.jpg", log, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("private metadata value", log, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [Theory]
     [InlineData(ImageOutputFormat.Original)]
     [InlineData(ImageOutputFormat.Jpeg)]

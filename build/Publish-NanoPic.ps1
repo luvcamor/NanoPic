@@ -21,7 +21,7 @@ if (-not $publishDirectory.StartsWith($publishPrefix, [StringComparison]::Ordina
     throw "Publish output must be a child of $publishRoot"
 }
 if (-not [string]::Equals($RuntimeIdentifier, 'win-x64', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'NanoPic 3.0 currently supports only the win-x64 release target.'
+    throw 'NanoPic currently supports only the win-x64 release target.'
 }
 
 $solution = Join-Path $repositoryRoot 'NanoPic.sln'

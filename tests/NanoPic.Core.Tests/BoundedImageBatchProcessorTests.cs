@@ -1,4 +1,5 @@
 using NanoPic.Core;
+using System.Runtime.InteropServices;
 using Xunit;
 
 namespace NanoPic.Core.Tests;
@@ -83,6 +84,35 @@ public sealed class BoundedImageBatchProcessorTests
     }
 
     [Fact]
+    public async Task Unexpected_COM_exception_is_isolated_to_one_batch_item()
+    {
+        var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-Core-COM-");
+        try
+        {
+            var codec = new TrackingCodec(
+                TimeSpan.Zero,
+                failedSourceName: "source-1.jpg",
+                exceptionToThrow: new COMException("private encoder detail", unchecked((int)0x88982F8E)));
+            var processor = new BoundedImageBatchProcessor(new ImageFileProcessingService(codec));
+            var requests = CreateRequests(directory.FullName, 3);
+
+            var result = await processor.ProcessAsync(requests, 2, progress: null, CancellationToken.None);
+
+            Assert.Equal(2, result.Progress.Succeeded);
+            Assert.Equal(1, result.Progress.Failed);
+            Assert.True(result.Items[0].IsSuccess);
+            Assert.False(result.Items[1].IsSuccess);
+            Assert.True(result.Items[2].IsSuccess);
+            Assert.Equal("处理过程中发生未预期错误。", result.Items[1].Failure?.UserMessage);
+            Assert.DoesNotContain("private encoder detail", result.Items[1].Failure?.UserMessage);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task File_processing_uses_synchronous_streams_for_codec_identification()
     {
         var directory = TestCompatibility.CreateTempSubdirectory("NanoPic-Core-");
@@ -129,11 +159,16 @@ public sealed class BoundedImageBatchProcessorTests
         private int _nonSynchronousIdentifications;
         private readonly TimeSpan _delay;
         private readonly string? _failedSourceName;
+        private readonly Exception? _exceptionToThrow;
 
-        public TrackingCodec(TimeSpan delay, string? failedSourceName = null)
+        public TrackingCodec(
+            TimeSpan delay,
+            string? failedSourceName = null,
+            Exception? exceptionToThrow = null)
         {
             _delay = delay;
             _failedSourceName = failedSourceName;
+            _exceptionToThrow = exceptionToThrow;
         }
 
         public int MaximumConcurrentEncodes => Volatile.Read(ref _maximumConcurrentEncodes);
@@ -165,6 +200,10 @@ public sealed class BoundedImageBatchProcessorTests
             {
                 if (string.Equals(Path.GetFileName(request.SourcePath), _failedSourceName, StringComparison.OrdinalIgnoreCase))
                 {
+                    if (_exceptionToThrow is not null)
+                    {
+                        throw _exceptionToThrow;
+                    }
                     return ImageOperationResult<ImageEncodedOutput>.Failed(ImageFailureKind.Unknown, "模拟单项编码失败。");
                 }
 

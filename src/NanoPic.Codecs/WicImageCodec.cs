@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,11 +17,47 @@ namespace NanoPic.Codecs;
 
 public sealed class WicImageCodec : IImageCodec
 {
+    private readonly Action<ImageMetadataFallbackLevel>? _beforeMetadataAttempt;
+
+    public WicImageCodec()
+    {
+    }
+
+    internal WicImageCodec(Action<ImageMetadataFallbackLevel> beforeMetadataAttempt)
+    {
+        _beforeMetadataAttempt = beforeMetadataAttempt ?? throw new ArgumentNullException(nameof(beforeMetadataAttempt));
+    }
+
     private sealed record FramePreparationResult(
         IReadOnlyList<BitmapFrame> Frames,
         bool PixelsChanged,
         bool MetadataChanged,
-        bool OrientationChanged);
+        bool OrientationChanged,
+        bool OrientationCouldNotBePreserved);
+
+    private sealed class MetadataCloneException : Exception
+    {
+        public MetadataCloneException(Exception innerException)
+            : base("无法克隆源图像元数据。", innerException)
+        {
+        }
+    }
+
+    private sealed class MetadataFrameException : Exception
+    {
+        public MetadataFrameException(Exception innerException)
+            : base("无法构造包含源图像元数据的编码帧。", innerException)
+        {
+        }
+    }
+
+    private sealed class MetadataEncodingException : Exception
+    {
+        public MetadataEncodingException(Exception innerException)
+            : base("编码器无法写入图像元数据。", innerException)
+        {
+        }
+    }
 
     private static readonly IReadOnlyCollection<ImageFormat> Formats = new HashSet<ImageFormat>
     {
@@ -98,7 +135,7 @@ public sealed class WicImageCodec : IImageCodec
                 exception);
         }
         catch (Exception exception) when (
-            exception is IOException or NotSupportedException or FileFormatException or ArgumentException)
+            exception is IOException or NotSupportedException or FileFormatException or ArgumentException or COMException)
         {
             return ImageOperationResult<CoreImageMetadata>.Failed(
                 ImageFailureKind.DecodeFailed,
@@ -173,6 +210,7 @@ public sealed class WicImageCodec : IImageCodec
                 "图像质量必须在 1 到 100 之间。");
         }
 
+        var decodeCompleted = false;
         try
         {
             return await Task.Run(async () =>
@@ -202,6 +240,7 @@ public sealed class WicImageCodec : IImageCodec
                         BitmapCreateOptions.PreservePixelFormat,
                         BitmapCacheOption.OnLoad);
                     sourceFrames = decoder.Frames.ToArray();
+                    decodeCompleted = true;
                 }
                 finally
                 {
@@ -226,11 +265,31 @@ public sealed class WicImageCodec : IImageCodec
                     return new ImageOperationResult<ImageEncodedOutput>(default, safetyFailure);
                 }
 
+                var fallbackLevels = GetFallbackLevels(request, sourceFrames);
+                var fallbackFailures = new List<Exception>();
+                var fallbackDiagnostics = new List<string>();
+                for (var fallbackIndex = 0; fallbackIndex < fallbackLevels.Count; fallbackIndex++)
+                {
+                    var fallbackLevel = fallbackLevels[fallbackIndex];
+                    try
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        DeleteTemporaryOutputBeforeAttempt(request.TemporaryOutputPath);
+                        try
+                        {
+                            _beforeMetadataAttempt?.Invoke(fallbackLevel);
+                        }
+                        catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+                        {
+                            throw new MetadataEncodingException(exception);
+                        }
+
                 var preparation = PrepareFrames(
                     sourceFrames,
                     request.SourceFormat,
                     request.OutputFormat,
-                    request.Transform);
+                    request.Transform,
+                    fallbackLevel);
                 var outputFrames = preparation.Frames;
                 var outputMetadata = CreateMetadata(outputFrames, request.OutputFormat, sourceBytes: 0L);
                 var outputSafetyFailure = ImageSafetyValidator.Validate(outputMetadata, request.SafetyLimits);
@@ -245,7 +304,8 @@ public sealed class WicImageCodec : IImageCodec
                 var targetSizeResized = false;
                 string? targetSizeNotice = null;
                 var outputAlreadyWritten = false;
-                var canReuseSource = CanReuseSourceFile(request, preparation);
+                var canReuseSource = fallbackLevel == ImageMetadataFallbackLevel.Full &&
+                    CanReuseSourceFile(request, preparation);
 
                 if (request.Encoding.TargetSize is { } targetSize)
                 {
@@ -302,12 +362,9 @@ public sealed class WicImageCodec : IImageCodec
                                     foreach (var frame in frames)
                                     {
                                         var resizedSource = Resize(frame, resizeOptions);
-                                        var newFrame = BitmapFrame.Create(
+                                        var newFrame = CreateResizedFrameWithMetadata(
                                             resizedSource,
-                                            null,
-                                            frame.Metadata as BitmapMetadata,
-                                            null);
-                                        newFrame.Freeze();
+                                            frame.Metadata as BitmapMetadata);
                                         newFrames.Add(newFrame);
                                     }
                                     return newFrames;
@@ -414,12 +471,9 @@ public sealed class WicImageCodec : IImageCodec
                                     foreach (var frame in outputFrames)
                                     {
                                         var resizedSource = Resize(frame, adaptiveResize);
-                                        var newFrame = BitmapFrame.Create(
+                                        var newFrame = CreateResizedFrameWithMetadata(
                                             resizedSource,
-                                            null,
-                                            frame.Metadata as BitmapMetadata,
-                                            null);
-                                        newFrame.Freeze();
+                                            frame.Metadata as BitmapMetadata);
                                         newFrames.Add(newFrame);
                                     }
 
@@ -466,12 +520,9 @@ public sealed class WicImageCodec : IImageCodec
                                     foreach (var frame in outputFrames)
                                     {
                                         var resizedSource = Resize(frame, adaptiveResize);
-                                        var newFrame = BitmapFrame.Create(
+                                        var newFrame = CreateResizedFrameWithMetadata(
                                             resizedSource,
-                                            null,
-                                            frame.Metadata as BitmapMetadata,
-                                            null);
-                                        newFrame.Freeze();
+                                            frame.Metadata as BitmapMetadata);
                                         newFrames.Add(newFrame);
                                     }
 
@@ -540,12 +591,9 @@ public sealed class WicImageCodec : IImageCodec
                                 foreach (var frame in outputFrames)
                                 {
                                     var resizedSource = Resize(frame, adaptiveResize);
-                                    var newFrame = BitmapFrame.Create(
+                                    var newFrame = CreateResizedFrameWithMetadata(
                                         resizedSource,
-                                        null,
-                                        frame.Metadata as BitmapMetadata,
-                                        null);
-                                    newFrame.Freeze();
+                                        frame.Metadata as BitmapMetadata);
                                     newFrames.Add(newFrame);
                                 }
 
@@ -597,6 +645,10 @@ public sealed class WicImageCodec : IImageCodec
                     }
                 }
 
+                var metadataFallbackNotice = CreateMetadataFallbackNotice(
+                    fallbackLevel,
+                    preparation.OrientationCouldNotBePreserved,
+                    bytes >= new FileInfo(request.SourcePath).Length);
                 return ImageOperationResult<ImageEncodedOutput>.Success(
                     new ImageEncodedOutput(
                         outputMetadata with { SourceBytes = bytes },
@@ -605,12 +657,61 @@ public sealed class WicImageCodec : IImageCodec
                         targetReached,
                         exceededTarget,
                         targetSizeResized,
-                        targetSizeNotice));
+                        targetSizeNotice,
+                        fallbackLevel,
+                        metadataFallbackNotice,
+                        preparation.OrientationCouldNotBePreserved));
+                    }
+                    catch (Exception exception) when (
+                        TryGetMetadataAttemptException(exception, out var fallbackException))
+                    {
+                        fallbackFailures.Add(fallbackException);
+                        fallbackDiagnostics.Add(
+                            $"{fallbackLevel}:{fallbackException.GetType().Name}:0x{fallbackException.HResult:X8}");
+                        DeleteTemporaryOutputBeforeAttempt(request.TemporaryOutputPath);
+                        if (ContainsMetadataCloneFailure(exception))
+                        {
+                            var safeIndex = fallbackLevels.IndexOf(ImageMetadataFallbackLevel.SafeMetadata);
+                            if (safeIndex > fallbackIndex)
+                            {
+                                fallbackIndex = safeIndex - 1;
+                            }
+                        }
+                    }
+                }
+
+                var fallbackAggregate = new AggregateException(
+                    fallbackLevels.Count > 1
+                        ? "所有 JPEG 元数据降级编码尝试均失败。"
+                        : "图像编码尝试失败。",
+                    fallbackFailures);
+                fallbackAggregate.Data["NanoPic.SafeDiagnostic"] = string.Join(";", fallbackDiagnostics);
+                return ImageOperationResult<ImageEncodedOutput>.Failed(
+                    ImageFailureKind.EncodeFailed,
+                    fallbackLevels.Count > 1
+                        ? "JPEG 编码失败，无法安全处理图片元数据。"
+                        : "WIC 无法完成图像编码。",
+                    fallbackAggregate);
             }, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
             return ImageOperationResult<ImageEncodedOutput>.Failed(ImageFailureKind.TaskCanceled, "图像编码已取消。");
+        }
+        catch (TargetInvocationException exception) when (
+            TryGetWrappedComException(exception, out var wrappedComException))
+        {
+            return ImageOperationResult<ImageEncodedOutput>.Failed(
+                decodeCompleted ? ImageFailureKind.EncodeFailed : ImageFailureKind.DecodeFailed,
+                decodeCompleted ? "WIC 无法完成图像编码。" : "WIC 无法解码图像。",
+                wrappedComException);
+        }
+        catch (COMException exception)
+        {
+            return ImageOperationResult<ImageEncodedOutput>.Failed(
+                decodeCompleted ? ImageFailureKind.EncodeFailed : ImageFailureKind.DecodeFailed,
+                decodeCompleted ? "WIC 无法完成图像编码。" : "WIC 无法解码图像。",
+                exception);
         }
         catch (Exception exception) when (exception is ArgumentException or OverflowException)
         {
@@ -652,17 +753,180 @@ public sealed class WicImageCodec : IImageCodec
     public static bool SupportsQualitySearch(ImageFormat format) =>
         format is ImageFormat.Jpeg or ImageFormat.Webp or ImageFormat.Png;
 
+    private static List<ImageMetadataFallbackLevel> GetFallbackLevels(
+        ImageEncodeRequest request,
+        IReadOnlyList<BitmapFrame> sourceFrames)
+    {
+        var levels = new List<ImageMetadataFallbackLevel>
+        {
+            ImageMetadataFallbackLevel.Full
+        };
+        if (request.SourceFormat != ImageFormat.Jpeg || request.Transform.StripMetadata)
+        {
+            return levels;
+        }
+
+        if (HasEmbeddedThumbnail(sourceFrames))
+        {
+            levels.Add(ImageMetadataFallbackLevel.WithoutThumbnail);
+        }
+        if (HasColorContexts(sourceFrames))
+        {
+            levels.Add(ImageMetadataFallbackLevel.WithoutThumbnailAndColorContexts);
+        }
+        levels.Add(ImageMetadataFallbackLevel.SafeMetadata);
+        levels.Add(ImageMetadataFallbackLevel.WithoutSourceMetadata);
+        return levels;
+    }
+
+    private static bool HasEmbeddedThumbnail(IReadOnlyList<BitmapFrame> frames)
+    {
+        foreach (var frame in frames)
+        {
+            try
+            {
+                if (frame.Thumbnail is not null)
+                {
+                    return true;
+                }
+            }
+            catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool HasColorContexts(IReadOnlyList<BitmapFrame> frames)
+    {
+        foreach (var frame in frames)
+        {
+            try
+            {
+                if (frame.ColorContexts is { Count: > 0 })
+                {
+                    return true;
+                }
+            }
+            catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static bool TryGetMetadataFallbackException(Exception exception, out Exception fallbackException)
+    {
+        if (exception is TargetInvocationException { InnerException: { } targetInner })
+        {
+            return TryGetMetadataFallbackException(targetInner, out fallbackException);
+        }
+        if (exception is MetadataCloneException { InnerException: { } cloneInner })
+        {
+            return TryGetMetadataFallbackException(cloneInner, out fallbackException);
+        }
+        if (exception is ArgumentException or OverflowException or COMException or
+            FileFormatException or NotSupportedException or InvalidOperationException)
+        {
+            fallbackException = exception;
+            return true;
+        }
+
+        fallbackException = exception;
+        return false;
+    }
+
+    private static bool TryGetMetadataAttemptException(Exception exception, out Exception fallbackException)
+    {
+        if (exception is TargetInvocationException { InnerException: { } targetInner })
+        {
+            return TryGetMetadataAttemptException(targetInner, out fallbackException);
+        }
+        if (exception is MetadataCloneException or MetadataFrameException or MetadataEncodingException)
+        {
+            if (exception.InnerException is { } inner)
+            {
+                return TryGetMetadataFallbackException(inner, out fallbackException);
+            }
+
+            fallbackException = exception;
+            return false;
+        }
+
+        fallbackException = exception;
+        return false;
+    }
+
+    private static bool TryGetWrappedComException(Exception exception, out COMException comException)
+    {
+        if (exception is COMException direct)
+        {
+            comException = direct;
+            return true;
+        }
+        if (exception is TargetInvocationException { InnerException: { } inner })
+        {
+            return TryGetWrappedComException(inner, out comException);
+        }
+
+        comException = null!;
+        return false;
+    }
+
+    private static bool ContainsMetadataCloneFailure(Exception exception)
+    {
+        if (exception is MetadataCloneException)
+        {
+            return true;
+        }
+        return exception is TargetInvocationException { InnerException: { } inner } &&
+            ContainsMetadataCloneFailure(inner);
+    }
+
+    private static string? CreateMetadataFallbackNotice(
+        ImageMetadataFallbackLevel fallbackLevel,
+        bool orientationCouldNotBePreserved,
+        bool outputNotSmaller)
+    {
+        var notice = fallbackLevel switch
+        {
+            ImageMetadataFallbackLevel.Full => null,
+            ImageMetadataFallbackLevel.WithoutThumbnail => "已忽略不兼容的嵌入缩略图。",
+            ImageMetadataFallbackLevel.WithoutThumbnailAndColorContexts => "已忽略不兼容的嵌入缩略图或色彩配置。",
+            ImageMetadataFallbackLevel.SafeMetadata => "已清理部分不兼容的图片元数据。",
+            ImageMetadataFallbackLevel.WithoutSourceMetadata => "已移除不兼容的源图片元数据。",
+            _ => null
+        };
+        if (orientationCouldNotBePreserved)
+        {
+            notice = AppendNotice(notice, "无法可靠保留原方向信息。");
+        }
+        if (fallbackLevel != ImageMetadataFallbackLevel.Full && outputNotSmaller)
+        {
+            notice = AppendNotice(notice, "输出未缩小，但已清理不兼容元数据。");
+        }
+        return notice;
+    }
+
+    private static string AppendNotice(string? existing, string addition) =>
+        string.IsNullOrWhiteSpace(existing) ? addition : existing + " " + addition;
+
     private static FramePreparationResult PrepareFrames(
         IReadOnlyList<BitmapFrame> sourceFrames,
         ImageFormat sourceFormat,
         ImageFormat outputFormat,
-        ImageTransformOptions transform)
+        ImageTransformOptions transform,
+        ImageMetadataFallbackLevel fallbackLevel)
     {
         var frameCount = outputFormat is ImageFormat.Gif or ImageFormat.Tiff ? sourceFrames.Count : 1;
         var result = new List<BitmapFrame>(frameCount);
         var anyPixelsChanged = false;
         var anyOrientationChanged = false;
-        var anyMetadataChanged = transform.StripMetadata ||
+        var orientationCouldNotBePreserved = false;
+        var anyMetadataChanged = fallbackLevel != ImageMetadataFallbackLevel.Full ||
+            transform.StripMetadata ||
             transform.MetadataNote is { Enabled: true } note && !string.IsNullOrWhiteSpace(note.Text);
         for (var index = 0; index < frameCount; index++)
         {
@@ -670,11 +934,20 @@ public sealed class WicImageCodec : IImageCodec
             BitmapSource prepared = source;
             var pixelsChanged = false;
             var orientationChanged = false;
-            if (transform.AutoOrient)
+            var shouldAutoOrient = transform.AutoOrient ||
+                fallbackLevel == ImageMetadataFallbackLevel.WithoutSourceMetadata;
+            if (shouldAutoOrient)
             {
-                prepared = ApplyExifOrientation(prepared, out orientationChanged);
+                prepared = ApplyExifOrientation(
+                    prepared,
+                    out orientationChanged,
+                    out var orientationReadable);
                 pixelsChanged |= orientationChanged;
                 anyOrientationChanged |= orientationChanged;
+                if (!orientationReadable && fallbackLevel == ImageMetadataFallbackLevel.WithoutSourceMetadata)
+                {
+                    orientationCouldNotBePreserved = true;
+                }
             }
 
             if (transform.Resize is { Enabled: true } resize)
@@ -707,17 +980,46 @@ public sealed class WicImageCodec : IImageCodec
                 pixelsChanged = true;
             }
 
-            var preserveMetadata = !transform.StripMetadata;
-            var metadata = preserveMetadata
-                ? CloneMetadata(source.Metadata as BitmapMetadata, orientationChanged)
-                : null;
+            var preserveSourceMetadata = !transform.StripMetadata &&
+                fallbackLevel != ImageMetadataFallbackLevel.WithoutSourceMetadata;
+            BitmapMetadata? metadata;
+            try
+            {
+                metadata = fallbackLevel == ImageMetadataFallbackLevel.SafeMetadata
+                    ? RebuildSafeMetadata(
+                        source.Metadata as BitmapMetadata,
+                        sourceFormat,
+                        outputFormat,
+                        orientationChanged)
+                    : preserveSourceMetadata
+                        ? CloneMetadata(source.Metadata as BitmapMetadata, orientationChanged)
+                        : null;
+            }
+            catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+            {
+                throw new MetadataCloneException(exception);
+            }
             metadata = ApplyMetadataNote(metadata, sourceFormat, outputFormat, transform.MetadataNote);
-            var frame = BitmapFrame.Create(
-                prepared,
-                preserveMetadata && !pixelsChanged ? source.Thumbnail : null,
-                metadata,
-                preserveMetadata && !pixelsChanged ? source.ColorContexts : null);
-            frame.Freeze();
+            var preserveThumbnail = preserveSourceMetadata &&
+                fallbackLevel == ImageMetadataFallbackLevel.Full &&
+                !pixelsChanged;
+            var preserveColorContexts = preserveSourceMetadata &&
+                fallbackLevel is ImageMetadataFallbackLevel.Full or ImageMetadataFallbackLevel.WithoutThumbnail &&
+                !pixelsChanged;
+            BitmapFrame frame;
+            try
+            {
+                frame = BitmapFrame.Create(
+                    prepared,
+                    preserveThumbnail ? source.Thumbnail : null,
+                    metadata,
+                    preserveColorContexts ? source.ColorContexts : null);
+                frame.Freeze();
+            }
+            catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+            {
+                throw new MetadataFrameException(exception);
+            }
             result.Add(frame);
             anyPixelsChanged |= pixelsChanged;
         }
@@ -734,7 +1036,196 @@ public sealed class WicImageCodec : IImageCodec
             finalFrames,
             anyPixelsChanged,
             anyMetadataChanged,
-            anyOrientationChanged);
+            anyOrientationChanged,
+            orientationCouldNotBePreserved);
+    }
+
+    private static readonly ushort[] SafeIfdTags =
+    {
+        270,   // ImageDescription
+        271,   // Make
+        272,   // Model
+        274,   // Orientation
+        305,   // Software
+        306,   // DateTime
+        315,   // Artist
+        18246, // Rating
+        18249, // RatingPercent
+        33432, // Copyright
+        40091, // XPTitle
+        40092, // XPComment
+        40093, // XPAuthor
+        40094, // XPKeywords
+        40095  // XPSubject
+    };
+
+    private static readonly ushort[] SafeExifTags =
+    {
+        33434, 33437, 34850, 34855, 36864, 36867, 36868,
+        37121, 37122, 37377, 37378, 37379, 37380, 37381,
+        37382, 37383, 37384, 37385, 37386, 37510, 40960,
+        40961, 40962, 40963, 41483, 41486, 41487, 41488,
+        41492, 41493, 41495, 41728, 41729, 41985, 41986,
+        41987, 41988, 41989, 41990, 41991, 41992, 41993,
+        41994, 41995, 42016, 42032, 42033, 42034, 42035,
+        42036, 42037
+    };
+
+    private static readonly ushort[] SafeGpsTags = Enumerable.Range(0, 32)
+        .Select(value => (ushort)value)
+        .ToArray();
+
+    private static BitmapMetadata? RebuildSafeMetadata(
+        BitmapMetadata? source,
+        ImageFormat sourceFormat,
+        ImageFormat outputFormat,
+        bool orientationChanged)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        if (outputFormat == ImageFormat.Png)
+        {
+            return RebuildSafePngMetadata(source);
+        }
+        if (outputFormat is not (ImageFormat.Jpeg or ImageFormat.Tiff))
+        {
+            return null;
+        }
+
+        var targetContainer = outputFormat == ImageFormat.Jpeg ? "jpg" : "tiff";
+        var target = new BitmapMetadata(targetContainer);
+        var targetIfd = outputFormat == ImageFormat.Jpeg ? "/app1/ifd" : "/ifd";
+        if (outputFormat == ImageFormat.Jpeg)
+        {
+            EnsureQueryBlock(target, "/app1", "app1");
+        }
+        EnsureQueryBlock(target, targetIfd, "ifd");
+        EnsureQueryBlock(target, targetIfd + "/exif", "exif");
+        EnsureQueryBlock(target, targetIfd + "/gps", "gps");
+
+        CopySafeTagSet(source, target, SafeIfdTags, string.Empty, targetIfd);
+        CopySafeTagSet(source, target, SafeExifTags, "/exif", targetIfd + "/exif");
+        CopySafeTagSet(source, target, SafeGpsTags, "/gps", targetIfd + "/gps");
+        if (orientationChanged)
+        {
+            TrySetMetadataQuery(target, targetIfd + "/{ushort=274}", (ushort)1);
+        }
+
+        _ = sourceFormat;
+        return target;
+    }
+
+    private static BitmapMetadata RebuildSafePngMetadata(BitmapMetadata source)
+    {
+        var target = new BitmapMetadata("png");
+        CopySafeTextQuery(source, target, 270, "Description");
+        CopySafeTextQuery(source, target, 315, "Author");
+        CopySafeTextQuery(source, target, 33432, "Copyright");
+        CopySafeTextQuery(source, target, 306, "Creation Time");
+        return target;
+    }
+
+    private static void CopySafeTextQuery(
+        BitmapMetadata source,
+        BitmapMetadata target,
+        ushort sourceTag,
+        string targetName)
+    {
+        if (!TryGetSafeMetadataValue(
+                source,
+                new[]
+                {
+                    $"/app1/ifd/{{ushort={sourceTag}}}",
+                    $"/ifd/{{ushort={sourceTag}}}"
+                },
+                out var value) || value is not string text || string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+        TrySetMetadataQuery(target, $"/tEXt/{{str={targetName}}}", text);
+    }
+
+    private static void CopySafeTagSet(
+        BitmapMetadata source,
+        BitmapMetadata target,
+        IReadOnlyList<ushort> tags,
+        string sourceSuffix,
+        string targetPrefix)
+    {
+        foreach (var tag in tags)
+        {
+            var sourcePaths = new[]
+            {
+                $"/app1/ifd{sourceSuffix}/{{ushort={tag}}}",
+                $"/ifd{sourceSuffix}/{{ushort={tag}}}"
+            };
+            if (TryGetSafeMetadataValue(source, sourcePaths, out var value))
+            {
+                TrySetMetadataQuery(target, $"{targetPrefix}/{{ushort={tag}}}", value);
+            }
+        }
+    }
+
+    private static bool TryGetSafeMetadataValue(
+        BitmapMetadata source,
+        IEnumerable<string> queries,
+        out object value)
+    {
+        foreach (var query in queries)
+        {
+            try
+            {
+                if (source.ContainsQuery(query) && source.GetQuery(query) is { } candidate &&
+                    IsSafeMetadataValue(candidate))
+                {
+                    value = candidate is Array array ? array.Clone() : candidate;
+                    return true;
+                }
+            }
+            catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+            {
+            }
+        }
+
+        value = string.Empty;
+        return false;
+    }
+
+    private static bool IsSafeMetadataValue(object value)
+    {
+        if (value is string text)
+        {
+            return text.Length <= 8192;
+        }
+        if (value is byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal or bool or char)
+        {
+            return true;
+        }
+        if (value is Array array)
+        {
+            if (array.Length > 4096 || array.Rank != 1)
+            {
+                return false;
+            }
+            var elementType = array.GetType().GetElementType();
+            return elementType is not null &&
+                (elementType.IsPrimitive || elementType == typeof(decimal));
+        }
+        return false;
+    }
+
+    private static void TrySetMetadataQuery(BitmapMetadata target, string query, object value)
+    {
+        try
+        {
+            target.SetQuery(query, value);
+        }
+        catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+        {
+        }
     }
 
     private static BitmapMetadata? ApplyMetadataNote(
@@ -822,9 +1313,12 @@ public sealed class WicImageCodec : IImageCodec
         }
     }
 
-    private static BitmapSource ApplyExifOrientation(BitmapSource source, out bool changed)
+    private static BitmapSource ApplyExifOrientation(
+        BitmapSource source,
+        out bool changed,
+        out bool orientationReadable)
     {
-        var orientation = ReadExifOrientation(source.Metadata as BitmapMetadata);
+        orientationReadable = TryReadExifOrientation(source.Metadata as BitmapMetadata, out var orientation);
         changed = orientation is >= 2 and <= 8;
         if (!changed)
         {
@@ -862,27 +1356,36 @@ public sealed class WicImageCodec : IImageCodec
 
     private static ushort ReadExifOrientation(BitmapMetadata? metadata)
     {
+        return TryReadExifOrientation(metadata, out var orientation) ? orientation : (ushort)1;
+    }
+
+    private static bool TryReadExifOrientation(BitmapMetadata? metadata, out ushort orientation)
+    {
+        orientation = 1;
         if (metadata is null)
         {
-            return 1;
+            return true;
         }
 
+        var queryFailed = false;
         foreach (var query in new[] { "/app1/ifd/{ushort=274}", "/ifd/{ushort=274}" })
         {
             try
             {
                 if (metadata.ContainsQuery(query) && metadata.GetQuery(query) is { } value)
                 {
-                    return Convert.ToUInt16(value, CultureInfo.InvariantCulture);
+                    orientation = Convert.ToUInt16(value, CultureInfo.InvariantCulture);
+                    return orientation is >= 1 and <= 8;
                 }
             }
             catch (Exception exception) when (
-                exception is ArgumentException or NotSupportedException or InvalidCastException or OverflowException)
+                exception is ArgumentException or NotSupportedException or InvalidCastException or OverflowException or COMException)
             {
+                queryFailed = true;
             }
         }
 
-        return 1;
+        return !queryFailed;
     }
 
     private static BitmapMetadata? CloneMetadata(BitmapMetadata? source, bool normalizeOrientation)
@@ -913,6 +1416,22 @@ public sealed class WicImageCodec : IImageCodec
         }
 
         return clone;
+    }
+
+    private static BitmapFrame CreateResizedFrameWithMetadata(
+        BitmapSource source,
+        BitmapMetadata? metadata)
+    {
+        try
+        {
+            var frame = BitmapFrame.Create(source, null, metadata, null);
+            frame.Freeze();
+            return frame;
+        }
+        catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+        {
+            throw new MetadataFrameException(exception);
+        }
     }
 
     private static BitmapSource Resize(BitmapSource source, ImageResizeOptions resize)
@@ -1228,14 +1747,20 @@ public sealed class WicImageCodec : IImageCodec
             var frame = frames[index];
             var quantized = PngQuantizer.Quantize(frame, quality, cancellationToken, out var info);
             var pixelsChanged = info.WasLossy || quantized.Format != frame.Format;
-
-            var pngFrame = BitmapFrame.Create(
-                quantized,
-                pixelsChanged ? null : frame.Thumbnail,
-                frame.Metadata as BitmapMetadata,
-                pixelsChanged ? null : frame.ColorContexts);
-            pngFrame.Freeze();
-            encoder.Frames.Add(pngFrame);
+            try
+            {
+                var pngFrame = BitmapFrame.Create(
+                    quantized,
+                    pixelsChanged ? null : frame.Thumbnail,
+                    frame.Metadata as BitmapMetadata,
+                    pixelsChanged ? null : frame.ColorContexts);
+                pngFrame.Freeze();
+                encoder.Frames.Add(pngFrame);
+            }
+            catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+            {
+                throw new MetadataEncodingException(exception);
+            }
         }
 
         using var output = new FileStream(
@@ -1245,7 +1770,14 @@ public sealed class WicImageCodec : IImageCodec
             FileShare.None,
             bufferSize: 65_536,
             useAsync: false);
-        encoder.Save(output);
+        try
+        {
+            encoder.Save(output);
+        }
+        catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+        {
+            throw new MetadataEncodingException(exception);
+        }
         output.Flush(flushToDisk: true);
     }
 
@@ -1257,9 +1789,16 @@ public sealed class WicImageCodec : IImageCodec
     {
         var encoder = CreateEncoder(outputFormat, quality);
         var frameCount = outputFormat is ImageFormat.Gif or ImageFormat.Tiff ? frames.Count : 1;
-        for (var index = 0; index < frameCount; index++)
+        try
         {
-            encoder.Frames.Add(frames[index]);
+            for (var index = 0; index < frameCount; index++)
+            {
+                encoder.Frames.Add(frames[index]);
+            }
+        }
+        catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+        {
+            throw new MetadataEncodingException(exception);
         }
 
         using var output = new FileStream(
@@ -1269,7 +1808,14 @@ public sealed class WicImageCodec : IImageCodec
             FileShare.None,
             bufferSize: 65_536,
             useAsync: false);
-        encoder.Save(output);
+        try
+        {
+            encoder.Save(output);
+        }
+        catch (Exception exception) when (TryGetMetadataFallbackException(exception, out _))
+        {
+            throw new MetadataEncodingException(exception);
+        }
         output.Flush(flushToDisk: true);
     }
 
@@ -1288,6 +1834,18 @@ public sealed class WicImageCodec : IImageCodec
         var tempDir = Path.Combine(Path.GetTempPath(), "NanoPic", "temp");
         Directory.CreateDirectory(tempDir);
         return Path.Combine(tempDir, ".nanopic-" + purpose + "-" + Guid.NewGuid().ToString("N") + extension);
+    }
+
+    private static void DeleteTemporaryOutputBeforeAttempt(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            throw new ArgumentException("临时输出路径不能为空。", nameof(path));
+        }
+        if (File.Exists(path))
+        {
+            File.Delete(path);
+        }
     }
 
     private static void DeleteIfExists(string path)

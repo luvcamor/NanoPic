@@ -84,7 +84,7 @@ public sealed class RealWorldBenchmarkTests
         Directory.CreateDirectory(tempDir);
 
         var reportSb = new StringBuilder();
-        reportSb.AppendLine("# NanoPic v3.2.2 本机实机功能测试报告");
+        reportSb.AppendLine("# NanoPic v3.2.5 本机实机功能测试报告");
         reportSb.AppendLine();
         reportSb.AppendLine($"**测试时间**: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         reportSb.AppendLine($"**测试环境**: Windows x64, .NET Framework 4.8, WIC Engine");

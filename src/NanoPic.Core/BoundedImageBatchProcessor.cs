@@ -225,7 +225,7 @@ public sealed class BoundedImageBatchProcessor
                         catch (Exception ex)
                         {
                             result = ImageOperationResult<ImageFileProcessResult>.Failed(
-                                ImageFailureKind.Unknown, $"处理过程中发生未预期异常：{ex.Message}", ex);
+                                ImageFailureKind.Unknown, "处理过程中发生未预期错误。", ex);
                         }
                     }
 

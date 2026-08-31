@@ -234,6 +234,11 @@ public sealed class RedactingFileLogger
             detail += VerbosePaths
                 ? Environment.NewLine + exception
                 : $" ({exception.GetType().Name})";
+            if (!VerbosePaths && exception.Data["NanoPic.SafeDiagnostic"] is string safeDiagnostic &&
+                !string.IsNullOrWhiteSpace(safeDiagnostic))
+            {
+                detail += $" [{Redact(safeDiagnostic)}]";
+            }
         }
 
         var line = $"{DateTimeOffset.UtcNow:O}\t{level}\t{detail}{Environment.NewLine}";
