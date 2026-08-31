@@ -374,3 +374,6 @@ dist/
 
 # Local refactor probes, UI screenshots, and legacy baseline binaries
 work/
+
+# Local-only agent instructions
+/AGENTS.md
