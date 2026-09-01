@@ -23,7 +23,7 @@
     <PackageReference Include="Costura.Fody" PrivateAssets="all" />
   </ItemGroup>
   <ItemGroup>
-    <EmbeddedResource Include="THIRD-PARTY-NOTICES.txt" />
+    <EmbeddedResource Include="../../THIRD-PARTY-NOTICES.txt" Link="THIRD-PARTY-NOTICES.txt" />
     <None Include="FodyWeavers.xml" />
   </ItemGroup>
   <ItemGroup>
