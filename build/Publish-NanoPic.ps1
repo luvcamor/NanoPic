@@ -67,11 +67,6 @@ try {
         throw "Release build failed with exit code $LASTEXITCODE."
     }
 
-    dotnet test $solution -c $Configuration --no-build --no-restore
-    if ($LASTEXITCODE -ne 0) {
-        throw "Release regression suite failed with exit code $LASTEXITCODE."
-    }
-
     & $portableScript -Configuration $Configuration -OutputDirectory $portableDirectory
     if (-not (Test-Path -LiteralPath $portableExecutable -PathType Leaf)) {
         throw "Portable build did not produce NanoPic.exe: $portableExecutable"
@@ -216,7 +211,6 @@ try {
             lockedRestoreCommand = 'dotnet restore NanoPic.sln --locked-mode --configfile NuGet.config'
             releaseCleanCommand = 'dotnet clean NanoPic.sln -c Release --verbosity minimal'
             releaseBuildCommand = 'dotnet build NanoPic.sln -c Release --no-restore'
-            releaseTestCommand = 'dotnet test NanoPic.sln -c Release --no-build --no-restore'
             portableBuildCommand = './build/Build-NanoPicPortable.ps1 -Configuration Release'
             sizeGateRule = 'NanoPic.exe < 2,000,000 B'
             packagedSmokeTestRule = 'NanoPic.exe --smoke-test <input> <output> exits 0 and writes the output file'

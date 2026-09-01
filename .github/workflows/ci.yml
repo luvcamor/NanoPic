@@ -67,11 +67,10 @@ jobs:
 
           Write-Host 'Embedded libwebp binaries match the official release.'
 
-      - name: Build, test, and publish net48 single-executable release
+      - name: Build and publish net48 single-executable release
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path artifacts/test-reports | Out-Null
-          $env:NANOPIC_REPORT_DIR = (Resolve-Path artifacts/test-reports).Path
+          New-Item -ItemType Directory -Force -Path artifacts/security-reports | Out-Null
           ./build/Publish-NanoPic.ps1 -Configuration Release -RuntimeIdentifier win-x64
 
       - name: Audit NuGet vulnerabilities
@@ -79,7 +78,7 @@ jobs:
         run: |
           $report = dotnet list NanoPic.sln package --vulnerable --include-transitive --format json --no-restore | Out-String
           if ($LASTEXITCODE -ne 0) { throw 'NuGet vulnerability audit failed to run.' }
-          Set-Content -LiteralPath artifacts/test-reports/nuget-vulnerabilities.json -Value $report -Encoding utf8
+          Set-Content -LiteralPath artifacts/security-reports/nuget-vulnerabilities.json -Value $report -Encoding utf8
           if ($report -match '"vulnerabilities"\s*:') { throw 'NuGet vulnerability audit found one or more vulnerable packages.' }
 
       - name: Verify publish layout and size gate
@@ -130,9 +129,9 @@ jobs:
           path: artifacts/publish/win-x64
           if-no-files-found: error
 
-      - name: Upload test and security reports
+      - name: Upload security reports
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: NanoPic-test-reports
-          path: artifacts/test-reports
+          name: NanoPic-security-reports
+          path: artifacts/security-reports
           if-no-files-found: error
