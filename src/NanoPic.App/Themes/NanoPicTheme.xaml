@@ -228,6 +228,9 @@
                             <Path x:Name="CheckMark" Data="M 3.5,8 L 6.5,11 L 12.5,5"
                                   Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round"
                                   StrokeEndLineCap="Round" Visibility="Collapsed"/>
+                            <Rectangle x:Name="IndeterminateMark" Width="8" Height="2" RadiusX="1" RadiusY="1"
+                                       Fill="White" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                       Visibility="Collapsed"/>
                         </Grid>
                         <ContentPresenter Margin="6,0,0,0" VerticalAlignment="Center" RecognizesAccessKey="True"/>
                     </StackPanel>
@@ -239,6 +242,11 @@
                             <Setter TargetName="CheckSurface" Property="Background" Value="{StaticResource AccentBrush}"/>
                             <Setter TargetName="CheckSurface" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>
                             <Setter TargetName="CheckMark" Property="Visibility" Value="Visible"/>
+                        </Trigger>
+                        <Trigger Property="IsChecked" Value="{x:Null}">
+                            <Setter TargetName="CheckSurface" Property="Background" Value="{StaticResource TextSecondaryBrush}"/>
+                            <Setter TargetName="CheckSurface" Property="BorderBrush" Value="{StaticResource TextSecondaryBrush}"/>
+                            <Setter TargetName="IndeterminateMark" Property="Visibility" Value="Visible"/>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
                             <Setter TargetName="CheckSurface" Property="BorderBrush" Value="{StaticResource AccentBrush}"/>

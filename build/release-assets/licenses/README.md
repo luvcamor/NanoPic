@@ -1,6 +1,6 @@
-# NanoPic 3.2.5 发布许可证目录
+# NanoPic 3.3.0 发布许可证目录
 
-此目录与发布根目录的 `THIRD-PARTY-NOTICES.txt`、`SBOM.spdx.json` 一起构成 NanoPic 3.2.5 的第三方组件许可证记录。
+此目录与发布根目录的 `THIRD-PARTY-NOTICES.txt`、`SBOM.spdx.json` 一起构成 NanoPic 3.3.0 的第三方组件许可证记录。
 
 | 组件 | 版本 | 许可证 | 对应文件 |
 |---|---:|---|---|

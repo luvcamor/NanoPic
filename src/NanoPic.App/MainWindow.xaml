@@ -161,16 +161,20 @@
                     <Button Content="打开输出目录" Style="{StaticResource GhostButton}" Click="OpenOutput_Click" AutomationProperties.Name="打开输出目录"/>
                     <Button Content="关于" Style="{StaticResource GhostButton}" Click="About_Click" Margin="0" AutomationProperties.Name="关于 NanoPic"/>
                 </StackPanel>
-                <StackPanel x:Name="QueueEditPanel" Orientation="Horizontal" DockPanel.Dock="Left">
-                    <Button Content="添加文件" Style="{StaticResource AccentButton}" Click="AddFiles_Click" ToolTip="添加图片（Ctrl+O）" AutomationProperties.Name="添加图片文件"/>
-                    <Button Content="添加文件夹" Click="AddFolder_Click" ToolTip="添加图片文件夹（Ctrl+Shift+O）" AutomationProperties.Name="添加图片文件夹"/>
-                    <Border Width="1" Height="20" Margin="0,0,12,0"
-                            VerticalAlignment="Center" Background="{StaticResource BorderBrush}"
-                            SnapsToDevicePixels="True" IsHitTestVisible="False"/>
-                    <Button Content="全选" Style="{StaticResource GhostButton}" Click="SelectAll_Click" ToolTip="勾选全部队列项（Ctrl+A）"/>
-                    <Button Content="反选" Style="{StaticResource GhostButton}" Click="InvertSelection_Click" ToolTip="反转勾选状态（Ctrl+I）"/>
-                    <Button Content="移除所选" Style="{StaticResource DangerGhostButton}" Click="RemoveSelected_Click" ToolTip="移除已勾选的队列项"/>
-                    <Button Content="重试失败项" Style="{StaticResource GhostButton}" Click="RetryFailed_Click" ToolTip="重新勾选所有失败项"/>
+                <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                    <StackPanel x:Name="QueueAddPanel" Orientation="Horizontal">
+                        <Button Content="添加文件" Style="{StaticResource AccentButton}" Click="AddFiles_Click" ToolTip="添加图片（Ctrl+O）" AutomationProperties.Name="添加图片文件"/>
+                        <Button Content="添加文件夹" Click="AddFolder_Click" ToolTip="添加图片文件夹（Ctrl+Shift+O）" AutomationProperties.Name="添加图片文件夹"/>
+                        <Border Width="1" Height="20" Margin="0,0,12,0"
+                                VerticalAlignment="Center" Background="{StaticResource BorderBrush}"
+                                SnapsToDevicePixels="True" IsHitTestVisible="False"/>
+                    </StackPanel>
+                    <StackPanel x:Name="QueueEditPanel" Orientation="Horizontal">
+                        <Button Content="全选" Style="{StaticResource GhostButton}" Click="SelectAll_Click" ToolTip="勾选全部队列项（Ctrl+A）"/>
+                        <Button Content="反选" Style="{StaticResource GhostButton}" Click="InvertSelection_Click" ToolTip="反转勾选状态（Ctrl+I）"/>
+                        <Button Content="移除所选" Style="{StaticResource DangerGhostButton}" Click="RemoveSelected_Click" ToolTip="移除已勾选的队列项"/>
+                        <Button Content="重试失败项" Style="{StaticResource GhostButton}" Click="RetryFailed_Click" ToolTip="重新勾选所有失败项"/>
+                    </StackPanel>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -438,6 +442,23 @@
                                             </ComboBox>
                                         </StackPanel>
                                         <CheckBox x:Name="AutoDownscaleCheck" Content="超限自动降采样" IsChecked="True" Checked="SettingsChanged" Unchecked="SettingsChanged" ToolTip="仅在图片像素总数超过上方安全上限时自动缩小；与“按目标大小”的尺寸调整无关"/>
+                                        <CheckBox x:Name="ShellIntegrationCheck" Content="集成到右键菜单" Margin="0,6,0,0"
+                                                  IsThreeState="False" Click="ShellIntegrationCheck_Click"
+                                                  AutomationProperties.Name="集成到右键菜单"
+                                                  ToolTip="仅写入当前用户注册项，不需要管理员权限；Windows 11 在“显示更多选项”的经典菜单中显示"/>
+                                        <TextBlock x:Name="ShellIntegrationHint" Text="在图片右键菜单中显示“添加到 NanoPic”。"
+                                                   Margin="0,3,0,0" FontSize="11" TextWrapping="Wrap"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"/>
+                                        <WrapPanel x:Name="ShellIntegrationActions" Orientation="Horizontal" Margin="0,5,0,0" Visibility="Collapsed">
+                                            <Button x:Name="ShellIntegrationAdoptButton" Content="设为当前版本" Style="{StaticResource GhostButton}"
+                                                    Visibility="Collapsed" Click="ShellIntegrationAdopt_Click"/>
+                                            <Button x:Name="ShellIntegrationRepairButton" Content="修复" Style="{StaticResource GhostButton}"
+                                                    Visibility="Collapsed" Click="ShellIntegrationRepair_Click"/>
+                                            <Button x:Name="ShellIntegrationRemoveButton" Content="移除" Style="{StaticResource DangerGhostButton}"
+                                                    Visibility="Collapsed" Click="ShellIntegrationRemove_Click"/>
+                                            <Button x:Name="ShellIntegrationDiagnosticsButton" Content="复制诊断信息" Style="{StaticResource GhostButton}"
+                                                    Visibility="Collapsed" Click="ShellIntegrationDiagnostics_Click"/>
+                                        </WrapPanel>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

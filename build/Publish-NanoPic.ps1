@@ -34,6 +34,7 @@ $projectLicenseSource = Join-Path $repositoryRoot 'LICENSE'
 $noticeSource = Join-Path $repositoryRoot 'src/NanoPic.App/THIRD-PARTY-NOTICES.txt'
 $sbomTemplate = Join-Path $PSScriptRoot 'release-assets/SBOM.spdx.template.json'
 $utf8WithoutBom = [Text.UTF8Encoding]::new($false)
+$samplePngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACFSURBVChTFcpBEcBACACxc4ITnOAECesAJzhBzXaad957GA/zYT3sh/NwH97D9wIjMAMrsAMncAMv/pAYiZlYiZ04iZt4+YfCKMzCKuzCKdzCqz80RmM2VmM3TuM2Xv9hMAZzsAZ7cAZ38OYPi7GYi7XYi7O4i7d/OIzDPKzDPpzDPbzDD8zwmQFcLHd6AAAAAElFTkSuQmCC'
 
 foreach ($requiredSource in @(
     $solution,
@@ -106,6 +107,70 @@ try {
         throw "FAILED-SIZE-GATE: NanoPic.exe is $size bytes; expected < 2,000,000 B."
     }
 
+    # Release gate: the packaged executable must pass the smoke test and must resolve
+    # startup modes strictly (unknown switches never open the main window, and the COM
+    # embedding mode never shows an empty window).
+    $gateDirectory = Join-Path ([IO.Path]::GetTempPath()) ('nanopic-release-gate-' + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $gateDirectory -Force | Out-Null
+    try {
+        # 8x8 PNG kept inline so the gate has no imaging dependency (Windows PowerShell and
+        # pwsh on CI resolve System.Drawing differently).
+        $gateInput = Join-Path $gateDirectory 'gate-input.png'
+        $gateOutput = Join-Path $gateDirectory 'gate-output.png'
+        [IO.File]::WriteAllBytes($gateInput, [Convert]::FromBase64String($samplePngBase64))
+        # Start-Process joins ArgumentList into one native command line. Preserve path
+        # boundaries explicitly so a TEMP directory containing spaces remains valid.
+        $gateInputArgument = '"' + $gateInput + '"'
+        $gateOutputArgument = '"' + $gateOutput + '"'
+
+        $smoke = Start-Process -FilePath $executable -ArgumentList @('--smoke-test', $gateInputArgument, $gateOutputArgument) -Wait -PassThru -WindowStyle Hidden
+        if ($smoke.ExitCode -ne 0) {
+            throw "FAILED-SMOKE-TEST: the packaged executable exited with $($smoke.ExitCode)."
+        }
+
+        if (-not (Test-Path -LiteralPath $gateOutput -PathType Leaf)) {
+            throw 'FAILED-SMOKE-TEST: the packaged executable produced no output file.'
+        }
+
+        $usageCases = @(
+            @('--smoke-test'),
+            @('--smoke-test', $gateInputArgument),
+            @('--smoke-test', $gateInputArgument, $gateOutputArgument, 'extra'),
+            @('--shell-add'),
+            @('-unknown-switch')
+        )
+        foreach ($usageCase in $usageCases) {
+            $usage = Start-Process -FilePath $executable -ArgumentList $usageCase -Wait -PassThru -WindowStyle Hidden
+            if ($usage.ExitCode -ne 64) {
+                throw "FAILED-STARTUP-MODE-GATE: '$($usageCase -join ' ')' exited with $($usage.ExitCode); expected 64."
+            }
+        }
+
+        $embedding = Start-Process -FilePath $executable -ArgumentList '-Embedding' -PassThru -WindowStyle Hidden
+        try {
+            Start-Sleep -Seconds 4
+            $embedding.Refresh()
+            if ($embedding.HasExited) {
+                throw "FAILED-STARTUP-MODE-GATE: -Embedding exited immediately with $($embedding.ExitCode)."
+            }
+
+            if ($embedding.MainWindowHandle -ne 0) {
+                throw 'FAILED-STARTUP-MODE-GATE: -Embedding opened a window without a shell request.'
+            }
+        }
+        finally {
+            $embedding.Refresh()
+            if (-not $embedding.HasExited) {
+                $embedding.Kill()
+            }
+        }
+
+        Write-Host 'Release gate: smoke test and startup modes verified on the packaged executable.'
+    }
+    finally {
+        Remove-Item -LiteralPath $gateDirectory -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     [IO.File]::WriteAllText(
         (Join-Path $publishDirectory 'NanoPic.exe.sha256'),
         "$hash *NanoPic.exe`n",
@@ -154,6 +219,8 @@ try {
             releaseTestCommand = 'dotnet test NanoPic.sln -c Release --no-build --no-restore'
             portableBuildCommand = './build/Build-NanoPicPortable.ps1 -Configuration Release'
             sizeGateRule = 'NanoPic.exe < 2,000,000 B'
+            packagedSmokeTestRule = 'NanoPic.exe --smoke-test <input> <output> exits 0 and writes the output file'
+            startupModeGateRule = 'unknown switches and malformed --smoke-test exit 64; -Embedding stays windowless'
         }
     }
     [IO.File]::WriteAllText(
@@ -207,10 +274,62 @@ try {
     Get-Content -LiteralPath (Join-Path $publishDirectory 'manifest.json') -Raw | ConvertFrom-Json | Out-Null
     Get-Content -LiteralPath (Join-Path $publishDirectory 'SBOM.spdx.json') -Raw | ConvertFrom-Json | Out-Null
 
+    $archivePath = Join-Path $publishRoot "NanoPic-v$productVersion-$RuntimeIdentifier.zip"
+    if (Test-Path -LiteralPath $archivePath) {
+        Remove-Item -LiteralPath $archivePath -Force
+    }
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory(
+        $publishDirectory,
+        $archivePath,
+        [IO.Compression.CompressionLevel]::Optimal,
+        $false)
+
+    $archive = [IO.Compression.ZipFile]::OpenRead($archivePath)
+    try {
+        $expectedEntries = @($requiredReleaseFiles | ForEach-Object { $_.Replace('\', '/') } | Sort-Object)
+        $actualEntries = @($archive.Entries |
+            Where-Object { -not [string]::IsNullOrEmpty($_.Name) } |
+            ForEach-Object { $_.FullName.Replace('\', '/') } |
+            Sort-Object)
+        $entryDifferences = @(Compare-Object -ReferenceObject $expectedEntries -DifferenceObject $actualEntries)
+        if ($entryDifferences.Count -ne 0 -or $actualEntries.Count -ne @($actualEntries | Select-Object -Unique).Count) {
+            throw "Release archive entries do not match the validated release files: $($entryDifferences -join ', ')"
+        }
+
+        $archivedExecutable = @($archive.Entries | Where-Object {
+            [string]::Equals($_.FullName.Replace('\', '/'), 'NanoPic.exe', [StringComparison]::Ordinal)
+        })
+        if ($archivedExecutable.Count -ne 1) {
+            throw 'Release archive must contain exactly one NanoPic.exe entry.'
+        }
+
+        $archiveExecutableStream = $archivedExecutable[0].Open()
+        $sha256 = [Security.Cryptography.SHA256]::Create()
+        try {
+            $archivedExecutableHash = [BitConverter]::ToString($sha256.ComputeHash($archiveExecutableStream)).Replace('-', '')
+        }
+        finally {
+            $sha256.Dispose()
+            $archiveExecutableStream.Dispose()
+        }
+        if (-not [string]::Equals($archivedExecutableHash, $hash, [StringComparison]::Ordinal)) {
+            throw 'NanoPic.exe inside the release archive does not match the published executable.'
+        }
+    }
+    finally {
+        $archive.Dispose()
+    }
+
+    $archiveHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToUpperInvariant()
+
     Write-Host "Published executable: $executable"
     Write-Host "Runtime files: 1"
     Write-Host "Size: $size bytes"
     Write-Host "SHA-256: $hash"
+    Write-Host "Release archive: $archivePath"
+    Write-Host "Archive SHA-256: $archiveHash"
 }
 finally {
     Pop-Location

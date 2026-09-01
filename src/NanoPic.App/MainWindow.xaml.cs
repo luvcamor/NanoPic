@@ -28,6 +28,7 @@ namespace NanoPic.App;
 public partial class MainWindow : Window
 {
     private readonly ObservableCollection<QueueItem> _items = new();
+    private readonly HashSet<string> _queuedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly SupportedImageFileScanner _scanner = new();
     private readonly ImageFileProcessingService _processor = new(new WicImageCodec());
     private readonly WicImageCodec _previewCodec = new();
@@ -35,29 +36,189 @@ public partial class MainWindow : Window
     private readonly IImageProcessingCapabilityProvider _capabilities = new DefaultImageProcessingCapabilityProvider();
     private readonly JsonSettingsStore _settingsStore = new(JsonSettingsStore.GetDefaultSettingsPath());
     private readonly RedactingFileLogger _logger = new(GetDefaultLogPath());
+    private readonly QueueImportCoordinator _importCoordinator;
     private CancellationTokenSource? _runCancellation;
     private NanoPicSettings _settings = NanoPicSettings.Default;
     private Task _settingsLoadTask = Task.CompletedTask;
     private bool _closeInProgress;
     private bool _closeCommitted;
     private readonly Dictionary<string, Window> _previewWindows = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentQueue<ShellAddRequest> _pendingShellRequests = new();
+    private readonly ShellIntegrationHost? _shellHost;
+    private bool _shellIntegrationUiUpdating;
+    private bool _shellRequestDrainScheduled;
+    private ShellIntegrationState? _shellIntegrationState;
 
     public MainWindow()
+        : this(null)
     {
+    }
+
+    internal MainWindow(ShellIntegrationHost? shellHost)
+    {
+        _shellHost = shellHost;
         _batchProcessor = new BoundedImageBatchProcessor(_processor);
+        _importCoordinator = new QueueImportCoordinator(_scanner, new QueueSink(this));
+        _items.CollectionChanged += Items_CollectionChanged;
         InitializeComponent();
         QueueGrid.ItemsSource = _items;
         Loaded += MainWindow_Loaded;
         Closing += MainWindow_Closing;
+        Activated += MainWindow_Activated;
         WatermarkColorBox.TextChanged += (_, _) => UpdateWatermarkColorSwatch();
         UpdateWatermarkColorSwatch();
+        if (_shellHost is not null)
+        {
+            _shellHost.WindowReceiver = ReceiveShellRequest;
+        }
+
         RefreshUi();
+    }
+
+    private void MainWindow_Activated(object? sender, EventArgs e) => _shellHost?.ReportActivated();
+
+    /// <summary>队列的规范化路径索引：随集合增删同步，供导入协调器做 O(1) 去重判断。</summary>
+    private void Items_CollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
+        {
+            _queuedPaths.Clear();
+            foreach (var item in _items)
+            {
+                if (QueueImportCoordinator.TryNormalize(item.Path, out var normalized))
+                {
+                    _queuedPaths.Add(normalized);
+                }
+            }
+
+            return;
+        }
+
+        foreach (var removed in e.OldItems?.Cast<QueueItem>() ?? Enumerable.Empty<QueueItem>())
+        {
+            if (QueueImportCoordinator.TryNormalize(removed.Path, out var normalized))
+            {
+                _queuedPaths.Remove(normalized);
+            }
+        }
+
+        foreach (var addedItem in e.NewItems?.Cast<QueueItem>() ?? Enumerable.Empty<QueueItem>())
+        {
+            if (QueueImportCoordinator.TryNormalize(addedItem.Path, out var normalized))
+            {
+                _queuedPaths.Add(normalized);
+            }
+        }
+    }
+
+    private sealed class QueueSink : IQueueImportSink
+    {
+        private readonly MainWindow _owner;
+
+        public QueueSink(MainWindow owner) => _owner = owner;
+
+        public bool Contains(string normalizedPath) => _owner._queuedPaths.Contains(normalizedPath);
+
+        public void Add(string path, long bytes) => _owner._items.Add(new QueueItem(path, bytes));
     }
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
         _settingsLoadTask = LoadSettingsAsync();
         await _settingsLoadTask;
+        // 设置与窗口初始化完成后才处理 Shell 请求与注册状态，避免与设置加载竞争。
+        await InitializeShellIntegrationAsync();
+        DrainPendingShellRequests();
+    }
+
+    /// <summary>
+    /// 由 broker 或本进程的 DropTarget 调用，可能来自管道线程。
+    /// 请求在这里被复制进队列即视为已接收（ACK），不等待签名扫描与缩略图处理。
+    /// </summary>
+    internal bool ReceiveShellRequest(ShellAddRequest request)
+    {
+        if (request is null)
+        {
+            return false;
+        }
+
+        if (!Dispatcher.CheckAccess())
+        {
+            try
+            {
+                return Dispatcher.Invoke(new Func<bool>(() => EnqueueShellRequest(request)));
+            }
+            catch (Exception exception) when (exception is TaskCanceledException or InvalidOperationException)
+            {
+                return false;
+            }
+        }
+
+        return EnqueueShellRequest(request);
+    }
+
+    /// <summary>在 Dispatcher 上原子判断窗口生命周期并入队，避免关闭期间先 ACK 后丢请求。</summary>
+    private bool EnqueueShellRequest(ShellAddRequest request)
+    {
+        if (_closeInProgress || _closeCommitted || Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+        {
+            return false;
+        }
+
+        _pendingShellRequests.Enqueue(request);
+        if (!_shellRequestDrainScheduled)
+        {
+            _shellRequestDrainScheduled = true;
+            Dispatcher.BeginInvoke(new Action(DrainPendingShellRequests));
+        }
+
+        return true;
+    }
+
+    private async void DrainPendingShellRequests()
+    {
+        _shellRequestDrainScheduled = false;
+        // 导入必须发生在设置加载之后，避免与 Loaded 阶段的初始化竞争。
+        await _settingsLoadTask;
+        while (_pendingShellRequests.TryDequeue(out var request))
+        {
+            if (request.ActivateWindow)
+            {
+                RestoreAndActivateWindow();
+            }
+
+            await ImportAsync(new ImportRequest(
+                request.Paths,
+                ImportSource.ShellContextMenu,
+                AllowDirectories: false,
+                request.UnavailableItemCount));
+        }
+    }
+
+    /// <summary>收到显式 Shell 请求后恢复窗口；Windows 拒绝前台切换时退化为任务栏提示。</summary>
+    private void RestoreAndActivateWindow()
+    {
+        if (WindowState == WindowState.Minimized)
+        {
+            WindowState = WindowState.Normal;
+        }
+
+        if (Activate())
+        {
+            return;
+        }
+
+        try
+        {
+            var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+            if (handle != IntPtr.Zero)
+            {
+                NativeWindowAttention.FlashTaskbar(handle);
+            }
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+        }
     }
 
     private async Task LoadSettingsAsync()
@@ -101,6 +262,10 @@ public partial class MainWindow : Window
             }
 
             _closeCommitted = true;
+            if (_shellHost is not null)
+            {
+                _shellHost.WindowReceiver = null;
+            }
             Close();
         }
         finally
@@ -114,7 +279,7 @@ public partial class MainWindow : Window
         var dialog = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Filter = "图像文件|*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.webp;*.gif;*.bmp;*.tif;*.tiff;*.ico|所有文件|*.*" };
         if (dialog.ShowDialog(this) == true)
         {
-            await AddPathsAsync(dialog.FileNames);
+            await ImportAsync(new ImportRequest(dialog.FileNames, ImportSource.FilePicker));
         }
     }
 
@@ -123,79 +288,84 @@ public partial class MainWindow : Window
         var dialog = new System.Windows.Forms.FolderBrowserDialog { Description = "选择要导入的图片文件夹" };
         if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
         {
-            await AddPathsAsync(new[] { dialog.SelectedPath });
+            await ImportAsync(new ImportRequest(new[] { dialog.SelectedPath }, ImportSource.FolderPicker));
         }
     }
 
     private async void Window_Drop(object sender, System.Windows.DragEventArgs e)
     {
-        if (_runCancellation is not null) return;
+        // 处理中也允许拖入：新文件排入队列等待下一批，与快捷键、按钮入口保持一致。
         if (e.Data.GetData(System.Windows.DataFormats.FileDrop) is string[] paths)
         {
-            await AddPathsAsync(paths);
+            await ImportAsync(new ImportRequest(paths, ImportSource.DragDrop));
         }
     }
 
-    private void Window_DragOver(object sender, System.Windows.DragEventArgs e) => e.Effects = (_runCancellation is null && e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop)) ? System.Windows.DragDropEffects.Copy : System.Windows.DragDropEffects.None;
+    private void Window_DragOver(object sender, System.Windows.DragEventArgs e) => e.Effects = e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop) ? System.Windows.DragDropEffects.Copy : System.Windows.DragDropEffects.None;
 
-    private async Task AddPathsAsync(IEnumerable<string> paths)
+    /// <summary>所有导入入口统一走这里：协调器负责去重与分类，窗口只负责反馈。</summary>
+    private async Task<ImportSummary> ImportAsync(ImportRequest request)
     {
-        var existingPaths = new HashSet<string>(_items.Select(i => i.Path), StringComparer.OrdinalIgnoreCase);
-        var skippedFiles = new List<string>();
-        var oversizedFiles = new List<string>();
-        const long maxFileSize = 512L * 1024L * 1024L;
-
-        foreach (var path in paths.Distinct(StringComparer.OrdinalIgnoreCase))
+        ImportSummary summary;
+        try
         {
-            var isDirectory = Directory.Exists(path);
-            var scan = await _scanner.ScanAsync(path, new FileScanOptions(Recursive: isDirectory), CancellationToken.None);
-            if (!isDirectory && scan.Files.Count == 0)
-            {
-                skippedFiles.Add(Path.GetFileName(path));
-            }
-
-            foreach (var file in scan.Files)
-            {
-                if (file.Bytes > maxFileSize)
-                {
-                    oversizedFiles.Add(Path.GetFileName(file.Path));
-                    continue;
-                }
-
-                if (existingPaths.Add(file.Path))
-                {
-                    _items.Add(new QueueItem(file.Path, file.Bytes));
-                }
-            }
+            summary = await _importCoordinator.ImportAsync(request, CancellationToken.None);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            ProgressText.Text = "导入过程中发生读取错误，详情见日志。";
+            await WriteLogAsync("ERROR", $"导入失败：{exception.Message}", exception);
+            return new ImportSummary(0, 0, Array.Empty<ImportIssue>());
         }
 
-        if (oversizedFiles.Count > 0)
+        await ReportImportSummaryAsync(request, summary);
+        RefreshUi();
+        return summary;
+    }
+
+    private async Task ReportImportSummaryAsync(ImportRequest request, ImportSummary summary)
+    {
+        if (summary.Added == 0 && summary.Duplicated == 0 && summary.Issues.Count == 0)
         {
-            var preview = string.Join("、", oversizedFiles.Take(3));
-            var suffix = oversizedFiles.Count > 3 ? $" 等 {oversizedFiles.Count} 个" : string.Empty;
+            return;
+        }
+
+        ProgressText.Text = summary.BuildStatusText();
+        foreach (var issue in summary.Issues)
+        {
+            await WriteLogAsync(
+                "WARN",
+                $"导入跳过（{ImportSummary.DescribeKind(issue.Kind)}）：{issue.Path}。{issue.Message}",
+                null);
+        }
+
+        await WriteLogAsync(
+            "INFO",
+            $"导入完成（来源 {request.Source}）：新增 {summary.Added}，重复 {summary.Duplicated}，跳过 {summary.Issues.Count}。",
+            null);
+
+        if (summary.IsCompleteFailure)
+        {
             System.Windows.MessageBox.Show(
                 this,
-                $"以下文件大小超过 512 MB 安全上限，已跳过导入：\n{preview}{suffix}",
-                "文件过大",
+                $"没有文件被加入队列：{summary.BuildIssueSummary()}。\n\n详细原因已写入日志。",
+                "导入未完成",
                 MessageBoxButton.OK,
                 MessageBoxImage.Warning);
         }
-
-        if (skippedFiles.Count > 0)
-        {
-            var preview = string.Join("、", skippedFiles.Take(3));
-            var suffix = skippedFiles.Count > 3 ? $" 等 {skippedFiles.Count} 个" : string.Empty;
-            ProgressText.Text = $"已跳过不支持的文件{suffix}：{preview}";
-        }
-
-        RefreshUi();
     }
 
     private void SelectAll_Click(object sender, RoutedEventArgs e) { foreach (var item in _items) item.IsSelected = true; RefreshUi(); }
     private void InvertSelection_Click(object sender, RoutedEventArgs e) { foreach (var item in _items) item.IsSelected = !item.IsSelected; RefreshUi(); }
-    private void RemoveSelected_Click(object sender, RoutedEventArgs e) { foreach (var item in _items.Where(item => item.IsSelected).ToArray()) _items.Remove(item); RefreshUi(); }
+    private void RemoveSelected_Click(object sender, RoutedEventArgs e)
+    {
+        if (_runCancellation is not null) return;
+        foreach (var item in _items.Where(item => item.IsSelected).ToArray()) _items.Remove(item);
+        RefreshUi();
+    }
     private void RetryFailed_Click(object sender, RoutedEventArgs e)
     {
+        if (_runCancellation is not null) return;
         foreach (var item in _items.Where(item => item.HasFailure)) { item.MarkPending(); item.IsSelected = true; }
         RefreshUi();
     }
@@ -1164,6 +1334,193 @@ public partial class MainWindow : Window
 
         var colorText = IsRgbHex(WatermarkColorBox.Text) ? WatermarkColorBox.Text : "#000000";
         WatermarkColorSwatch.Background = new SolidColorBrush((System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString(colorText));
+    }
+
+    private async Task InitializeShellIntegrationAsync()
+    {
+        if (_shellHost is null)
+        {
+            ApplyShellIntegrationUnavailable("当前环境不支持右键菜单集成。");
+            return;
+        }
+
+        try
+        {
+            if (!_shellHost.AllowStartupReconcile)
+            {
+                // Explorer 激活出来的进程只读取状态，不执行注册表恢复。
+                RefreshShellIntegrationUi(await Task.Run(() => _shellHost.Registry.Detect()));
+                return;
+            }
+
+            var reconcile = await Task.Run(() => _shellHost.Registry.ReconcileOnStartup());
+            _shellHost.SyncComRegistration();
+            var transientHint = reconcile.Action switch
+            {
+                ShellIntegrationReconcileAction.PathAutoUpdated => "已自动更新右键菜单路径。",
+                ShellIntegrationReconcileAction.InterruptedOperationCompleted => "已完成上次未结束的右键菜单操作。",
+                _ => null
+            };
+            RefreshShellIntegrationUi(reconcile.State, transientHint);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+        {
+            await WriteLogAsync("WARN", $"读取右键菜单注册状态失败：{exception.Message}", exception);
+            ApplyShellIntegrationUnavailable("无法读取右键菜单注册状态。");
+        }
+    }
+
+    private void ApplyShellIntegrationUnavailable(string hint)
+    {
+        if (ShellIntegrationCheck is null)
+        {
+            return;
+        }
+
+        _shellIntegrationUiUpdating = true;
+        ShellIntegrationCheck.IsChecked = false;
+        ShellIntegrationCheck.IsEnabled = false;
+        ShellIntegrationHint.Text = hint;
+        ShellIntegrationActions.Visibility = Visibility.Collapsed;
+        _shellIntegrationUiUpdating = false;
+    }
+
+    /// <summary>正常状态只显示紧凑开关与一行说明；异常时才展开修复/移除/诊断操作。</summary>
+    private void RefreshShellIntegrationUi(ShellIntegrationState state, string? transientHint = null)
+    {
+        if (ShellIntegrationCheck is null)
+        {
+            return;
+        }
+
+        _shellIntegrationState = state;
+        _shellIntegrationUiUpdating = true;
+        try
+        {
+            ShellIntegrationCheck.IsEnabled = state.Status != ShellIntegrationStatus.Conflict;
+            ShellIntegrationCheck.IsChecked = state.Status switch
+            {
+                ShellIntegrationStatus.InstalledCurrent => true,
+                ShellIntegrationStatus.NotInstalled => false,
+                _ => null
+            };
+
+            ShellIntegrationHint.Text = transientHint ?? ShellIntegrationPresentation.BuildHint(
+                state,
+                ShellIntegrationPresentation.IsWindows11OrLater);
+
+            var showAdopt = state.Status == ShellIntegrationStatus.InstalledStale;
+            var showRepair = state.Status is ShellIntegrationStatus.Partial or ShellIntegrationStatus.RecoveryPending;
+            var showConflict = state.Status == ShellIntegrationStatus.Conflict;
+            ShellIntegrationAdoptButton.Visibility = showAdopt ? Visibility.Visible : Visibility.Collapsed;
+            ShellIntegrationRepairButton.Visibility = showRepair ? Visibility.Visible : Visibility.Collapsed;
+            ShellIntegrationRemoveButton.Visibility = showAdopt || showRepair ? Visibility.Visible : Visibility.Collapsed;
+            ShellIntegrationDiagnosticsButton.Visibility = showConflict ? Visibility.Visible : Visibility.Collapsed;
+            ShellIntegrationActions.Visibility = showAdopt || showRepair || showConflict
+                ? Visibility.Visible
+                : Visibility.Collapsed;
+        }
+        finally
+        {
+            _shellIntegrationUiUpdating = false;
+        }
+    }
+
+    private async void ShellIntegrationCheck_Click(object sender, RoutedEventArgs e)
+    {
+        if (_shellIntegrationUiUpdating || _shellHost is null)
+        {
+            return;
+        }
+
+        // 异常状态不通过三态循环隐式决定“修复还是删除”，必须点击明确操作。
+        if (_shellIntegrationState is { AllowsDirectToggle: false })
+        {
+            RefreshShellIntegrationUi(_shellIntegrationState);
+            return;
+        }
+
+        var install = _shellIntegrationState?.Status != ShellIntegrationStatus.InstalledCurrent;
+        await RunShellIntegrationOperationAsync(
+            install ? "正在启用右键菜单…" : "正在移除右键菜单…",
+            service => install ? service.Install() : service.Remove());
+    }
+
+    private async void ShellIntegrationRepair_Click(object sender, RoutedEventArgs e) =>
+        await RunShellIntegrationOperationAsync("正在修复右键菜单…", service => service.Repair());
+
+    private async void ShellIntegrationAdopt_Click(object sender, RoutedEventArgs e) =>
+        await RunShellIntegrationOperationAsync("正在切换到当前版本…", service => service.Repair());
+
+    private async void ShellIntegrationRemove_Click(object sender, RoutedEventArgs e) =>
+        await RunShellIntegrationOperationAsync("正在移除右键菜单…", service => service.Remove());
+
+    private void ShellIntegrationDiagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        var report = _shellIntegrationState?.BuildDiagnosticReport() ?? "没有可用的诊断信息。";
+        try
+        {
+            System.Windows.Clipboard.SetText(report);
+            ProgressText.Text = "右键菜单诊断信息已复制到剪贴板。";
+        }
+        catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or InvalidOperationException)
+        {
+            System.Windows.MessageBox.Show(this, report, "右键菜单诊断信息", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+    }
+
+    private async Task RunShellIntegrationOperationAsync(
+        string busyText,
+        Func<ShellContextMenuIntegrationService, ShellIntegrationOperationResult> operation)
+    {
+        if (_shellHost is null)
+        {
+            return;
+        }
+
+        var previousHint = ShellIntegrationHint.Text;
+        ShellIntegrationCheck.IsEnabled = false;
+        ShellIntegrationActions.IsEnabled = false;
+        ShellIntegrationHint.Text = "处理中…";
+        ProgressText.Text = busyText;
+        try
+        {
+            var result = await Task.Run(() => operation(_shellHost.Registry));
+            _shellHost.SyncComRegistration();
+            // 不依赖写入方法的返回值：重新读取注册表真实状态。
+            var state = await Task.Run(() => _shellHost.Registry.Detect());
+            RefreshShellIntegrationUi(state);
+            if (!result.Succeeded && result.UserMessage is not null)
+            {
+                System.Windows.MessageBox.Show(this, result.UserMessage, "右键菜单集成", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+
+            ProgressText.Text = result.Succeeded
+                ? state.Status == ShellIntegrationStatus.InstalledCurrent
+                    ? ShellIntegrationPresentation.IsWindows11OrLater
+                        ? "右键菜单已启用。" + ShellIntegrationPresentation.Windows11EntryNote
+                        : "右键菜单已启用。"
+                    : "右键菜单已移除。"
+                : "右键菜单操作未完成。";
+            await WriteLogAsync(
+                result.Succeeded ? "INFO" : "WARN",
+                $"右键菜单集成操作完成：状态 {state.Status}，扩展 {state.RegisteredExtensionCount}/{state.ExpectedExtensionCount}。{result.UserMessage}",
+                null);
+        }
+        catch (Exception exception) when (exception is UnauthorizedAccessException or IOException or InvalidOperationException or System.Security.SecurityException)
+        {
+            await WriteLogAsync("ERROR", $"右键菜单集成操作失败：{exception.Message}", exception);
+            ShellIntegrationHint.Text = previousHint;
+            System.Windows.MessageBox.Show(this, "右键菜单操作失败，详细信息已写入日志。", "右键菜单集成", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            ShellIntegrationActions.IsEnabled = true;
+            if (_shellIntegrationState is null || _shellIntegrationState.Status != ShellIntegrationStatus.Conflict)
+            {
+                ShellIntegrationCheck.IsEnabled = true;
+            }
+        }
     }
 
     private void RefreshUi()

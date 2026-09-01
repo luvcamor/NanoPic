@@ -170,15 +170,15 @@
       "NanoPic": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Codecs": "[3.2.5, )",
-          "NanoPic.Core": "[3.2.5, )",
-          "NanoPic.Infrastructure": "[3.2.5, )"
+          "NanoPic.Codecs": "[3.3.0, )",
+          "NanoPic.Core": "[3.3.0, )",
+          "NanoPic.Infrastructure": "[3.3.0, )"
         }
       },
       "nanopic.codecs": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.2.5, )"
+          "NanoPic.Core": "[3.3.0, )"
         }
       },
       "nanopic.core": {
@@ -187,7 +187,7 @@
       "nanopic.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.2.5, )",
+          "NanoPic.Core": "[3.3.0, )",
           "System.Text.Json": "[8.0.5, )"
         }
       },

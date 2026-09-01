@@ -10,7 +10,27 @@ namespace NanoPic.Infrastructure;
 
 public sealed record FileScanOptions(bool Recursive, int MaxDepth = 16, long MaxFileBytes = 512L * 1024L * 1024L);
 public sealed record SupportedImageFile(string Path, ImageFormat Format, long Bytes);
-public sealed record FileScanIssue(string Path, ImageFailureKind Kind, string Message);
+
+/// <summary>
+/// 扫描器拒绝一个候选文件的具体原因。<see cref="FileScanIssue.Kind"/> 只表达粗粒度失败类别，
+/// 无法区分“超过大小上限”“空文件”“签名不受支持”，导入层需要按具体原因分别汇总。
+/// </summary>
+public enum FileScanIssueReason
+{
+    Unspecified = 0,
+    PathNotFound,
+    AccessDenied,
+    EmptyFile,
+    FileTooLarge,
+    UnsupportedSignature
+}
+
+public sealed record FileScanIssue(
+    string Path,
+    ImageFailureKind Kind,
+    string Message,
+    FileScanIssueReason Reason = FileScanIssueReason.Unspecified);
+
 public sealed record FileScanResult(IReadOnlyList<SupportedImageFile> Files, IReadOnlyList<FileScanIssue> Issues);
 
 public sealed class SupportedImageFileScanner
@@ -24,13 +44,17 @@ public sealed class SupportedImageFileScanner
         var issues = new List<FileScanIssue>();
         if (File.Exists(PortablePath.ForFileSystem(rootPath)))
         {
-            await TryAddFileAsync(rootPath, options.MaxFileBytes, files, issues, cancellationToken).ConfigureAwait(false);
+            await TryAddFileAsync(rootPath, options.MaxFileBytes, reportUnsupported: true, files, issues, cancellationToken).ConfigureAwait(false);
             return new FileScanResult(files, issues);
         }
 
         if (!Directory.Exists(PortablePath.ForFileSystem(rootPath)))
         {
-            issues.Add(new FileScanIssue(rootPath, ImageFailureKind.FileAccessConflict, "导入路径不存在。"));
+            issues.Add(new FileScanIssue(
+                rootPath,
+                ImageFailureKind.FileAccessConflict,
+                "导入路径不存在。",
+                FileScanIssueReason.PathNotFound));
             return new FileScanResult(files, issues);
         }
 
@@ -52,28 +76,30 @@ public sealed class SupportedImageFileScanner
             return;
         }
 
-        IEnumerable<string> childFiles;
-        IEnumerable<string> childDirectories;
+        string[] childFiles;
+        string[] childDirectories;
         try
         {
             var fileSystemDirectory = PortablePath.ForFileSystem(directory);
-            childFiles = Directory.EnumerateFiles(fileSystemDirectory);
-            childDirectories = options.Recursive ? Directory.EnumerateDirectories(fileSystemDirectory) : Array.Empty<string>();
+            // 目录枚举是惰性的；在 try 内物化，确保 MoveNext 阶段的权限/IO 异常也会被记录成单项问题。
+            childFiles = Directory.GetFiles(fileSystemDirectory);
+            childDirectories = options.Recursive ? Directory.GetDirectories(fileSystemDirectory) : Array.Empty<string>();
         }
         catch (UnauthorizedAccessException exception)
         {
-            issues.Add(new FileScanIssue(directory, ImageFailureKind.FileAccessConflict, exception.Message));
+            issues.Add(new FileScanIssue(directory, ImageFailureKind.FileAccessConflict, exception.Message, FileScanIssueReason.AccessDenied));
             return;
         }
         catch (IOException exception)
         {
-            issues.Add(new FileScanIssue(directory, ImageFailureKind.FileAccessConflict, exception.Message));
+            issues.Add(new FileScanIssue(directory, ImageFailureKind.FileAccessConflict, exception.Message, FileScanIssueReason.AccessDenied));
             return;
         }
 
         foreach (var file in childFiles)
         {
-            await TryAddFileAsync(file, options.MaxFileBytes, files, issues, cancellationToken).ConfigureAwait(false);
+            // 目录递归中不把非图片文件报成问题：普通文件夹本来就混有文档等无关文件。
+            await TryAddFileAsync(file, options.MaxFileBytes, reportUnsupported: false, files, issues, cancellationToken).ConfigureAwait(false);
         }
 
         foreach (var childDirectory in childDirectories)
@@ -85,6 +111,7 @@ public sealed class SupportedImageFileScanner
     private static async Task TryAddFileAsync(
         string path,
         long maxFileBytes,
+        bool reportUnsupported,
         List<SupportedImageFile> files,
         List<FileScanIssue> issues,
         CancellationToken cancellationToken)
@@ -98,8 +125,23 @@ public sealed class SupportedImageFileScanner
 
             var fileSystemPath = PortablePath.ForFileSystem(path);
             var info = new FileInfo(fileSystemPath);
-            if (info.Length <= 0 || info.Length > maxFileBytes)
+            if (info.Length <= 0)
             {
+                issues.Add(new FileScanIssue(
+                    path,
+                    ImageFailureKind.UnsupportedFormat,
+                    "文件内容为空。",
+                    FileScanIssueReason.EmptyFile));
+                return;
+            }
+
+            if (info.Length > maxFileBytes)
+            {
+                issues.Add(new FileScanIssue(
+                    path,
+                    ImageFailureKind.PixelBudgetExceeded,
+                    $"文件大小超过 {maxFileBytes / (1024L * 1024L)} MB 安全上限。",
+                    FileScanIssueReason.FileTooLarge));
                 return;
             }
 
@@ -109,6 +151,14 @@ public sealed class SupportedImageFileScanner
             {
                 files.Add(new SupportedImageFile(PortablePath.ForDisplay(path), signature.Value, info.Length));
             }
+            else if (reportUnsupported)
+            {
+                issues.Add(new FileScanIssue(
+                    path,
+                    ImageFailureKind.UnsupportedFormat,
+                    signature.Failure?.UserMessage ?? "文件签名不是受支持的图片格式。",
+                    FileScanIssueReason.UnsupportedSignature));
+            }
         }
         catch (OperationCanceledException)
         {
@@ -116,11 +166,19 @@ public sealed class SupportedImageFileScanner
         }
         catch (UnauthorizedAccessException exception)
         {
-            issues.Add(new FileScanIssue(path, ImageFailureKind.FileAccessConflict, exception.Message));
+            issues.Add(new FileScanIssue(path, ImageFailureKind.FileAccessConflict, exception.Message, FileScanIssueReason.AccessDenied));
+        }
+        catch (FileNotFoundException exception)
+        {
+            issues.Add(new FileScanIssue(path, ImageFailureKind.FileAccessConflict, exception.Message, FileScanIssueReason.PathNotFound));
+        }
+        catch (DirectoryNotFoundException exception)
+        {
+            issues.Add(new FileScanIssue(path, ImageFailureKind.FileAccessConflict, exception.Message, FileScanIssueReason.PathNotFound));
         }
         catch (IOException exception)
         {
-            issues.Add(new FileScanIssue(path, ImageFailureKind.FileAccessConflict, exception.Message));
+            issues.Add(new FileScanIssue(path, ImageFailureKind.FileAccessConflict, exception.Message, FileScanIssueReason.AccessDenied));
         }
     }
 
@@ -248,16 +306,42 @@ public sealed class RedactingFileLogger
         {
             cancellationToken.ThrowIfCancellationRequested();
             RotateIfNeeded(LogPath);
-
-            using (var writer = new StreamWriter(LogPath, append: true, new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
-            {
-                await writer.WriteAsync(line).ConfigureAwait(false);
-            }
+            await AppendWithRetryAsync(line, cancellationToken).ConfigureAwait(false);
             cancellationToken.ThrowIfCancellationRequested();
         }
         finally
         {
             _writeLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 多实例共享同一日志文件：用 FileShare.ReadWrite 追加并在争用时短暂重试，
+    /// 否则另一个进程写入期间的日志会被静默丢弃，事后无法复盘。
+    /// </summary>
+    private async Task AppendWithRetryAsync(string line, CancellationToken cancellationToken)
+    {
+        const int maxAttempts = 5;
+        var bytes = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false).GetBytes(line);
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var stream = new FileStream(
+                    LogPath,
+                    FileMode.Append,
+                    FileAccess.Write,
+                    FileShare.ReadWrite,
+                    bufferSize: 4096,
+                    useAsync: true);
+                await stream.WriteAsync(bytes, 0, bytes.Length, cancellationToken).ConfigureAwait(false);
+                await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+            catch (IOException) when (attempt < maxAttempts)
+            {
+                await Task.Delay(20 * attempt, cancellationToken).ConfigureAwait(false);
+            }
         }
     }
 

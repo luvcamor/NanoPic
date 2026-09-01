@@ -1,4 +1,4 @@
-NanoPic 3.2.5 — Third-Party Notices
+NanoPic 3.3.0 — Third-Party Notices
 ====================================
 
 NanoPic distributes third-party code inside its single executable. The full
