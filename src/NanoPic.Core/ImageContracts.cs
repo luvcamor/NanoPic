@@ -205,7 +205,10 @@ public sealed record ImageBatchResult(
     IReadOnlyList<ImageOperationResult<ImageFileProcessResult>> Items,
     ImageBatchProgress Progress);
 
-public sealed record ImageOperationFailure(ImageFailureKind Kind, string UserMessage, Exception? Exception = null);
+public sealed record ImageOperationFailure(ImageFailureKind Kind, string UserMessage, Exception? Exception = null)
+{
+    public string DiagnosticMessage => ImageFailureDiagnostics.Format(this);
+}
 
 public sealed record ImageOperationResult<T>(T? Value, ImageOperationFailure? Failure)
 {

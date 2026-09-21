@@ -736,18 +736,42 @@ public sealed class WicImageCodec : IImageCodec
         }
         catch (Exception exception) when (exception is NotSupportedException or FileFormatException)
         {
-            return ImageOperationResult<ImageEncodedOutput>.Failed(
-                ImageFailureKind.DecodeFailed,
-                "WIC 无法解码或编码图像。",
-                exception);
+            return new ImageOperationResult<ImageEncodedOutput>(
+                default,
+                CreateWicFormatFailure(decodeCompleted, exception));
         }
         catch (LibWebpToolException exception)
         {
-            return ImageOperationResult<ImageEncodedOutput>.Failed(
-                ImageFailureKind.DecodeFailed,
-                "libwebp 无法处理图像。",
-                exception);
+            return new ImageOperationResult<ImageEncodedOutput>(
+                default,
+                CreateLibWebpFailure(decodeCompleted, exception));
         }
+    }
+
+    internal static ImageOperationFailure CreateLibWebpFailure(
+        bool decodeCompleted,
+        LibWebpToolException exception)
+    {
+        if (exception is null) throw new ArgumentNullException(nameof(exception));
+
+        return new ImageOperationFailure(
+            decodeCompleted ? ImageFailureKind.EncodeFailed : ImageFailureKind.DecodeFailed,
+            decodeCompleted ? "libwebp 编码 WebP 图像失败。" : "libwebp 解码 WebP 图像失败。",
+            exception);
+    }
+
+    internal static ImageOperationFailure CreateWicFormatFailure(
+        bool decodeCompleted,
+        Exception exception)
+    {
+        if (exception is null) throw new ArgumentNullException(nameof(exception));
+
+        return new ImageOperationFailure(
+            decodeCompleted ? ImageFailureKind.EncodeFailed : ImageFailureKind.DecodeFailed,
+            decodeCompleted
+                ? "WIC 无法编码图像：所选输出格式或编码方式不受支持。"
+                : "WIC 无法解码图像：文件数据或编码方式不受支持。",
+            exception);
     }
 
     public static bool SupportsQualitySearch(ImageFormat format) =>

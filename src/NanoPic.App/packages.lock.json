@@ -90,7 +90,7 @@
       "nanopic.codecs": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.3.0, )"
+          "NanoPic.Core": "[3.3.1, )"
         }
       },
       "nanopic.core": {
@@ -99,7 +99,7 @@
       "nanopic.infrastructure": {
         "type": "Project",
         "dependencies": {
-          "NanoPic.Core": "[3.3.0, )",
+          "NanoPic.Core": "[3.3.1, )",
           "System.Text.Json": "[8.0.5, )"
         }
       },

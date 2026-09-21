@@ -452,14 +452,22 @@ public partial class MainWindow : Window
             {
                 if (stream.Length > safetyLimits.MaxSourceBytes)
                 {
-                    System.Windows.MessageBox.Show(this, "图像文件大小超过安全处理上限，无法预览。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    await ReportPreviewFailureAsync(
+                        item,
+                        new ImageOperationFailure(
+                            ImageFailureKind.PixelBudgetExceeded,
+                            "图像文件大小超过安全处理上限，无法预览。"));
                     return;
                 }
 
                 var detected = await ImageFileSignatureInspector.DetectAsync(stream, CancellationToken.None).ConfigureAwait(true);
                 if (!detected.IsSuccess || detected.Value == ImageFormat.Unknown)
                 {
-                    System.Windows.MessageBox.Show(this, "无法识别所选图片的格式。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    await ReportPreviewFailureAsync(
+                        item,
+                        detected.Failure ?? new ImageOperationFailure(
+                            ImageFailureKind.UnsupportedFormat,
+                            "无法识别所选图片的格式。"));
                     return;
                 }
 
@@ -467,7 +475,11 @@ public partial class MainWindow : Window
                 var probeResult = ImageDimensionProbe.Probe(stream, sourceFormat);
                 if (!probeResult.IsSuccess || probeResult.Value is null)
                 {
-                    System.Windows.MessageBox.Show(this, "未能解析图像头部尺寸，无法安全预览。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    await ReportPreviewFailureAsync(
+                        item,
+                        probeResult.Failure ?? new ImageOperationFailure(
+                            ImageFailureKind.DecodeFailed,
+                            "未能解析图像头部尺寸，无法安全预览。"));
                     return;
                 }
 
@@ -490,8 +502,11 @@ public partial class MainWindow : Window
             var safetyResult = ImageSafetyValidator.ValidateWithAction(preMetadata, safetyLimits);
             if (safetyResult.Action == SafetyAction.Reject)
             {
-                var msg = safetyResult.Failure?.UserMessage ?? "图像尺寸超过安全上限，无法预览。";
-                System.Windows.MessageBox.Show(this, msg, "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                await ReportPreviewFailureAsync(
+                    item,
+                    safetyResult.Failure ?? new ImageOperationFailure(
+                        ImageFailureKind.PixelBudgetExceeded,
+                        "图像尺寸超过安全上限，无法预览。"));
                 return;
             }
 
@@ -533,7 +548,10 @@ public partial class MainWindow : Window
                 .ConfigureAwait(true);
             if (!encoded.IsSuccess)
             {
-                System.Windows.MessageBox.Show(this, "无法预览所选图片。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+                var previewFailure = encoded.Failure ?? new ImageOperationFailure(
+                    ImageFailureKind.EncodeFailed,
+                    "预览编码失败，但没有返回详细原因。");
+                await ReportPreviewFailureAsync(item, previewFailure);
                 return;
             }
             if (encoded.Value?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
@@ -575,12 +593,32 @@ public partial class MainWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
         {
-            System.Windows.MessageBox.Show(this, "无法预览所选图片。", "预览失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+            var previewFailure = new ImageOperationFailure(
+                exception is UnauthorizedAccessException or IOException
+                    ? ImageFailureKind.FileAccessConflict
+                    : ImageFailureKind.DecodeFailed,
+                "无法读取或生成所选图片的预览。",
+                exception);
+            await ReportPreviewFailureAsync(item, previewFailure);
         }
         finally
         {
             try { File.Delete(temporaryPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
+    }
+
+    private async Task ReportPreviewFailureAsync(QueueItem item, ImageOperationFailure failure)
+    {
+        await WriteLogAsync(
+            "ERROR",
+            $"图片预览失败：{item.Path}。{failure.DiagnosticMessage}",
+            failure.Exception);
+        System.Windows.MessageBox.Show(
+            this,
+            failure.DiagnosticMessage,
+            "预览失败",
+            MessageBoxButton.OK,
+            MessageBoxImage.Warning);
     }
 
     private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -682,9 +720,12 @@ public partial class MainWindow : Window
                 effectiveSettings.Compress.OutputIndex + i);
             if (!output.IsSuccess || output.Value is null)
             {
-                item.MarkFailure(output.Failure?.Kind ?? ImageFailureKind.InvalidConfiguration, output.Failure?.UserMessage ?? "无法规划输出路径。");
+                var planningFailure = output.Failure ?? new ImageOperationFailure(
+                    ImageFailureKind.InvalidConfiguration,
+                    "无法规划输出路径，但没有返回详细原因。");
+                item.MarkFailure(planningFailure);
                 planningFailures++;
-                await WriteLogAsync("ERROR", $"输出路径规划失败：{item.Path}。{item.Detail}", output.Failure?.Exception);
+                await WriteLogAsync("ERROR", $"输出路径规划失败：{item.Path}。{planningFailure.DiagnosticMessage}", planningFailure.Exception);
                 continue;
             }
 
@@ -764,8 +805,8 @@ public partial class MainWindow : Window
                 else
                 {
                     var failureResult = result.Failure ?? new ImageOperationFailure(ImageFailureKind.DecodeFailed, "处理失败，但没有返回详细原因。");
-                    item.MarkFailure(failureResult.Kind, failureResult.UserMessage);
-                    await WriteLogAsync("ERROR", $"图像处理失败：{item.Path}。{failureResult.UserMessage}", failureResult.Exception);
+                    item.MarkFailure(failureResult);
+                    await WriteLogAsync("ERROR", $"图像处理失败：{item.Path}。{failureResult.DiagnosticMessage}", failureResult.Exception);
                 }
             }
 
@@ -797,23 +838,31 @@ public partial class MainWindow : Window
         }
         catch (OutOfMemoryException oom)
         {
+            var batchFailure = new ImageOperationFailure(
+                ImageFailureKind.PixelBudgetExceeded,
+                "系统内存不足，已停止后续处理。",
+                oom);
             foreach (var item in selected.Where(i => i.IsProcessing || i.IsPending))
             {
-                item.MarkFailure(ImageFailureKind.PixelBudgetExceeded, "系统内存不足，已停止后续处理。");
+                item.MarkFailure(batchFailure);
             }
             ProgressText.Text = "系统内存不足，批处理已停止。";
-            await WriteLogAsync("ERROR", "批处理因系统内存不足停止。", oom);
-            System.Windows.MessageBox.Show(this, "系统可用内存不足，已中止批处理操作。", "内存不足", MessageBoxButton.OK, MessageBoxImage.Error);
+            await WriteLogAsync("ERROR", $"批处理因系统内存不足停止。{batchFailure.DiagnosticMessage}", oom);
+            System.Windows.MessageBox.Show(this, batchFailure.DiagnosticMessage, "内存不足", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         catch (Exception exception)
         {
+            var batchFailure = new ImageOperationFailure(
+                ImageFailureKind.Unknown,
+                "批处理发生未预期错误。",
+                exception);
             foreach (var item in selected.Where(i => i.IsProcessing || i.IsPending))
             {
-                item.MarkFailure(ImageFailureKind.Unknown, "批处理发生未预期错误。");
+                item.MarkFailure(batchFailure);
             }
             ProgressText.Text = "批处理发生错误。";
-            await WriteLogAsync("ERROR", "批处理发生未捕获异常。", exception);
-            System.Windows.MessageBox.Show(this, "处理过程中发生未预期错误，请查看日志了解详情。", "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            await WriteLogAsync("ERROR", $"批处理发生未捕获异常。{batchFailure.DiagnosticMessage}", exception);
+            System.Windows.MessageBox.Show(this, batchFailure.DiagnosticMessage, "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -1772,6 +1821,12 @@ public sealed class QueueItem : INotifyPropertyChanged
         Detail = outputPath ?? string.Empty;
         OnPropertyChanged(nameof(HasFailure));
     }
+    public void MarkFailure(ImageOperationFailure failure)
+    {
+        if (failure is null) throw new ArgumentNullException(nameof(failure));
+        MarkFailure(failure.Kind, failure.DiagnosticMessage);
+    }
+
     public void MarkFailure(ImageFailureKind kind, string message) { _failureKind = kind; Status = kind == ImageFailureKind.TaskCanceled ? "已取消" : "失败"; Detail = message; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkCanceled() => MarkFailure(ImageFailureKind.TaskCanceled, "已取消");
     public event PropertyChangedEventHandler? PropertyChanged; private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
