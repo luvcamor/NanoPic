@@ -24,6 +24,7 @@ public sealed class BoundedImageBatchProcessor
                 }
 
                 var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _waiters.AddLast(tcs);
                 if (cancellationToken.CanBeCanceled)
                 {
                     var registration = cancellationToken.Register(() =>
@@ -37,7 +38,6 @@ public sealed class BoundedImageBatchProcessor
                     _ = tcs.Task.ContinueWith(_ => registration.Dispose(), TaskScheduler.Default);
                 }
 
-                _waiters.AddLast(tcs);
                 return tcs.Task;
             }
         }
@@ -81,7 +81,8 @@ public sealed class BoundedImageBatchProcessor
         int maxDegreeOfParallelism,
         IReadOnlyList<long>? imagePixelCounts,
         IProgress<ImageBatchProgress>? progress,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<string>? protectedSourcePaths = null)
     {
         if (requests is null) throw new ArgumentNullException(nameof(requests));
         if (maxDegreeOfParallelism <= 0)
@@ -101,6 +102,7 @@ public sealed class BoundedImageBatchProcessor
             return new ImageBatchResult(Array.Empty<ImageOperationResult<ImageFileProcessResult>>(), emptyProgress);
         }
 
+        var planned = await Task.Run(() => ImageBatchPathPlanner.Plan(requests, cancellationToken, protectedSourcePaths)).ConfigureAwait(false);
         var results = new ImageOperationResult<ImageFileProcessResult>[requests.Count];
         var activeLimits = new List<int>();
         var lockObj = new object();
@@ -125,44 +127,54 @@ public sealed class BoundedImageBatchProcessor
             return OversizedImageConcurrencyPolicy.LimitFor(pixels, maxDegreeOfParallelism).MaxConcurrentTasks;
         }
 
+        // Serialize counters and notifications so concurrent completions never send
+        // inconsistent totals or move the UI progress backwards.
+        var progressLock = new object();
+        void ReportItem(int index, ImageOperationResult<ImageFileProcessResult>? result)
+        {
+            lock (progressLock)
+            {
+                if (result is not null)
+                {
+                    results[index] = result;
+                    completed++;
+                    if (result.IsSuccess) succeeded++;
+                    else if (result.Failure?.Kind == ImageFailureKind.TaskCanceled) canceled++;
+                    else failed++;
+                }
+                progress?.Report(new ImageBatchProgress(requests.Count, completed, succeeded,
+                    failed, canceled, new ImageBatchItemProgress(index, result)));
+            }
+        }
+
+        ImageOperationResult<ImageFileProcessResult> SkippedResult() =>
+            Volatile.Read(ref oomTriggered)
+                ? ImageOperationResult<ImageFileProcessResult>.Failed(
+                    ImageFailureKind.PixelBudgetExceeded, "因内存不足，任务已跳过。")
+                : ImageOperationResult<ImageFileProcessResult>.Failed(
+                    ImageFailureKind.TaskCanceled, "批处理已取消，任务未开始。");
+
         for (var index = 0; index < requests.Count; index++)
         {
             if (cancellationToken.IsCancellationRequested || Volatile.Read(ref oomTriggered))
             {
-                var cancelKind = Volatile.Read(ref oomTriggered)
-                    ? ImageFailureKind.PixelBudgetExceeded
-                    : ImageFailureKind.TaskCanceled;
-                var cancelMessage = Volatile.Read(ref oomTriggered)
-                    ? "因内存不足，任务已跳过。"
-                    : "批处理已取消，任务未开始。";
+                ReportItem(index, SkippedResult());
+                continue;
+            }
 
-                results[index] = ImageOperationResult<ImageFileProcessResult>.Failed(cancelKind, cancelMessage);
-                var completedNow = Interlocked.Increment(ref completed);
-                if (cancelKind == ImageFailureKind.TaskCanceled)
-                {
-                    Interlocked.Increment(ref canceled);
-                }
-                else
-                {
-                    Interlocked.Increment(ref failed);
-                }
-
-                progress?.Report(new ImageBatchProgress(
-                    requests.Count,
-                    completedNow,
-                    Volatile.Read(ref succeeded),
-                    Volatile.Read(ref failed),
-                    Volatile.Read(ref canceled)));
+            if (!planned[index].IsSuccess || planned[index].Value is null)
+            {
+                ReportItem(index, new ImageOperationResult<ImageFileProcessResult>(default, planned[index].Failure));
                 continue;
             }
 
             var taskLimit = GetLimitForIndex(index);
 
+            var admitted = false;
             // FIFO admission wait
             while (true)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (Volatile.Read(ref oomTriggered)) break;
+                if (cancellationToken.IsCancellationRequested || Volatile.Read(ref oomTriggered)) break;
 
                 lock (lockObj)
                 {
@@ -173,24 +185,29 @@ public sealed class BoundedImageBatchProcessor
                     if (currentActive < allowedCapacity)
                     {
                         activeLimits.Add(taskLimit);
+                        admitted = true;
                         break;
                     }
                 }
 
-                await slotAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+                try
+                {
+                    await slotAvailable.WaitAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break; // Drain running workers before returning; never abandon them.
+                }
             }
 
-            if (Volatile.Read(ref oomTriggered))
+            if (!admitted)
             {
-                results[index] = ImageOperationResult<ImageFileProcessResult>.Failed(
-                    ImageFailureKind.PixelBudgetExceeded, "因内存不足，任务已跳过。");
-                Interlocked.Increment(ref completed);
-                Interlocked.Increment(ref failed);
+                ReportItem(index, SkippedResult());
                 continue;
             }
 
             var currentIndex = index;
-            var currentReq = requests[currentIndex];
+            var currentReq = planned[currentIndex].Value!;
             var currentLimit = taskLimit;
 
             var task = Task.Run(async () =>
@@ -207,6 +224,7 @@ public sealed class BoundedImageBatchProcessor
                     {
                         try
                         {
+                            ReportItem(currentIndex, null);
                             result = await _processingService.ProcessAsync(currentReq, cancellationToken).ConfigureAwait(false);
                         }
                         catch (OutOfMemoryException oom)
@@ -229,27 +247,7 @@ public sealed class BoundedImageBatchProcessor
                         }
                     }
 
-                    results[currentIndex] = result;
-                    var completedNow = Interlocked.Increment(ref completed);
-                    if (result.IsSuccess)
-                    {
-                        Interlocked.Increment(ref succeeded);
-                    }
-                    else if (result.Failure?.Kind == ImageFailureKind.TaskCanceled)
-                    {
-                        Interlocked.Increment(ref canceled);
-                    }
-                    else
-                    {
-                        Interlocked.Increment(ref failed);
-                    }
-
-                    progress?.Report(new ImageBatchProgress(
-                        requests.Count,
-                        completedNow,
-                        Volatile.Read(ref succeeded),
-                        Volatile.Read(ref failed),
-                        Volatile.Read(ref canceled)));
+                    ReportItem(currentIndex, result);
                 }
                 finally
                 {

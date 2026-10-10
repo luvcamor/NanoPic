@@ -88,6 +88,7 @@ public static class PngQuantizer
 
         for (var offset = 0; offset < totalBytes; offset += 4)
         {
+            if ((offset & 0x1FFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
             var b = pixelBuffer[offset];
             var g = pixelBuffer[offset + 1];
             var r = pixelBuffer[offset + 2];
@@ -143,6 +144,7 @@ public static class PngQuantizer
             var pixelIdx = 0;
             for (var offset = 0; offset < totalBytes; offset += 4)
             {
+                if ((offset & 0x1FFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
                 var b = pixelBuffer[offset];
                 var g = pixelBuffer[offset + 1];
                 var r = pixelBuffer[offset + 2];
@@ -270,6 +272,7 @@ public static class PngQuantizer
 
         for (var offset = 0; offset < totalBytes; offset += 4)
         {
+            if ((offset & 0x1FFFF) == 0) cancellationToken.ThrowIfCancellationRequested();
             var b = pixelBuffer[offset];
             var g = pixelBuffer[offset + 1];
             var r = pixelBuffer[offset + 2];
@@ -574,6 +577,8 @@ public static class PngQuantizer
             return output;
         }
 
+        var paletteLookup = new PaletteLookup(palette);
+
         // Floyd-Steinberg 误差扩散抖动
         // 误差缓冲区两行：当前行与下一行，每像素 4 个通道 (B, G, R, A)
         var errorStride = (width + 2) * 4;
@@ -614,7 +619,7 @@ public static class PngQuantizer
                 var curR = ClampToByte(origR + (int)Math.Round(errorCurr[errOffset + 2] * ditherStrength / 16.0));
                 var curA = ClampToByte(origA + (int)Math.Round(errorCurr[errOffset + 3] * ditherStrength / 16.0));
 
-                var bestIdx = FindClosestPaletteIndex(curR, curG, curB, curA, palR, palG, palB, palA, paletteCount);
+                var bestIdx = paletteLookup.Find(curR, curG, curB, curA);
                 output[outputIndex++] = (byte)bestIdx;
 
                 var matchedR = palR[bestIdx];

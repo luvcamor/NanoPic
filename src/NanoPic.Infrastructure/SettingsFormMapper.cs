@@ -36,7 +36,10 @@ public sealed record SettingsFormState(
     string MetadataNoteText = "",
     bool AutoDownscaleOnExceed = true,
     string SoftMaxPixels = "200",
-    bool AllowResizeForTarget = false);
+    bool AllowResizeForTarget = false,
+    int CompressionPreferenceIndex = 0,
+    int ImageContentIndex = 0,
+    OutputDirectoryMode OutputMode = OutputDirectoryMode.SeparateDirectory);
 
 public static class SettingsFormMapper
 {
@@ -70,7 +73,7 @@ public static class SettingsFormMapper
         settings.Resize.PreserveAspectRatio,
         settings.Processing.AutoOrient,
         settings.Processing.StripMetadata,
-        settings.Graph.BrightnessPercent != 100,
+        settings.Graph.IsBrightnessEnabled,
         settings.Graph.BrightnessPercent.ToString(),
         settings.Graph.BackgroundColorHex,
         settings.Watermark.Enabled,
@@ -97,12 +100,17 @@ public static class SettingsFormMapper
         settings.MetadataNote.Text,
         settings.System.AutoDownscaleOnExceed,
         (settings.OversizedImage.SoftMaxPixels / 1_000_000).ToString(),
-        settings.Compress.AllowResizeForTarget);
+        settings.Compress.AllowResizeForTarget,
+        settings.Compress.Preference == CompressionPreference.PreserveFidelity ? 0 : 1,
+        settings.Compress.ContentKind == ImageContentKind.Auto ? 0 : settings.Compress.ContentKind == ImageContentKind.Photo ? 1 : 2,
+        settings.Ui.OutputMode);
     }
 
     public static NanoPicSettings Capture(NanoPicSettings basis, SettingsFormState form)
     {
         var quality = ParseOrDefault(form.Quality, basis.Compress.Quality);
+        var manualQualityActive = form.CompressionPreferenceIndex == 1 && !form.UseTargetSize && form.OutputFormatIndex is 0 or 1 or 2 or 7;
+        if (!manualQualityActive) quality = ValidOrDefault(quality, 1, 100, basis.Compress.Quality);
         var unitBytes = form.TargetSizeInMegabytes ? 1024L * 1024 : 1024L;
         var fallbackTargetValue = form.TargetSizeInMegabytes
             ? Math.Max(1, basis.Compress.TargetBytes / (1024L * 1024))
@@ -117,6 +125,31 @@ public static class SettingsFormMapper
         var outputIndex = ParseOrDefault(form.OutputIndex, basis.Compress.OutputIndex);
         var maxThreads = ParseOrDefault(form.MaxThreads, basis.System.MaxThreads);
         var softMaxPixels = ParseLongOrDefault(form.SoftMaxPixels, basis.OversizedImage.SoftMaxPixels / 1_000_000) * 1_000_000L;
+        // Valid inactive drafts survive mode switches; invalid inactive values must
+        // not block processing or persist an unusable configuration.
+        if (!form.UseTargetSize && (targetValue <= 0 || targetValue > long.MaxValue / unitBytes)) targetValue = fallbackTargetValue;
+        if (!form.ResizeEnabled)
+        {
+            width = ValidOrDefault(width, 1, 32768, basis.Resize.Width);
+            height = ValidOrDefault(height, 1, 32768, basis.Resize.Height);
+        }
+        if (!form.BrightnessEnabled) brightness = ValidOrDefault(brightness, 0, 200, basis.Graph.BrightnessPercent);
+        var watermarkColor = form.WatermarkColorHex.Trim();
+        if (!form.WatermarkEnabled)
+        {
+            watermarkOpacity = ValidOrDefault(watermarkOpacity, 0, 100, basis.Watermark.OpacityPercent);
+            watermarkFontSize = ValidOrDefault(watermarkFontSize, 4, 256, basis.Watermark.FontSize);
+            watermarkMargin = ValidOrDefault(watermarkMargin, 0, 4096, basis.Watermark.Margin);
+            if (!IsColor(watermarkColor)) watermarkColor = basis.Watermark.ColorHex;
+        }
+        var backgroundColor = form.BackgroundColorHex.Trim();
+        if (form.OutputFormatIndex is not (0 or 4 or 7) && !IsColor(backgroundColor)) backgroundColor = basis.Graph.BackgroundColorHex;
+        var template = string.IsNullOrWhiteSpace(form.OutputFilenameTemplate) ? "{name}" : form.OutputFilenameTemplate.Trim();
+        if (form.OutputMode == OutputDirectoryMode.SourceDirectory)
+        {
+            outputIndex = ValidOrDefault(outputIndex, 1, int.MaxValue, basis.Compress.OutputIndex);
+            if (!IsTemplate(template)) template = basis.Compress.OutputFilenameTemplate;
+        }
 
         return basis with
         {
@@ -142,9 +175,9 @@ public static class SettingsFormMapper
                 TargetBytes = targetValue * unitBytes,
                 AllowExceedTarget = form.AllowExceedTarget,
                 AllowResizeForTarget = form.AllowResizeForTarget,
-                OutputFilenameTemplate = string.IsNullOrWhiteSpace(form.OutputFilenameTemplate)
-                    ? "{name}"
-                    : form.OutputFilenameTemplate.Trim(),
+                Preference = form.CompressionPreferenceIndex == 1 ? CompressionPreference.SizeFirst : CompressionPreference.PreserveFidelity,
+                ContentKind = form.ImageContentIndex == 2 ? ImageContentKind.TextOrScreenshot : form.ImageContentIndex == 1 ? ImageContentKind.Photo : ImageContentKind.Auto,
+                OutputFilenameTemplate = template,
                 OutputIndex = outputIndex,
                 ConflictPolicy = form.ConflictPolicyIndex switch
                 {
@@ -159,12 +192,12 @@ public static class SettingsFormMapper
             MetadataNote = new MetadataNoteSettings(
                 form.MetadataNoteEnabled && !string.IsNullOrWhiteSpace(form.MetadataNoteText),
                 form.MetadataNoteText.Trim()),
-            Graph = basis.Graph with { BrightnessPercent = brightness, BackgroundColorHex = form.BackgroundColorHex.Trim() },
+            Graph = basis.Graph with { BrightnessPercent = brightness, BrightnessEnabled = basis.Graph.BrightnessEnabled is null && form.BrightnessEnabled == (brightness != 100) ? null : form.BrightnessEnabled, BackgroundColorHex = backgroundColor },
             Watermark = basis.Watermark with
             {
                 Enabled = form.WatermarkEnabled,
                 Text = form.WatermarkText,
-                ColorHex = form.WatermarkColorHex.Trim(),
+                ColorHex = watermarkColor,
                 OpacityPercent = watermarkOpacity,
                 FontSize = watermarkFontSize,
                 Margin = watermarkMargin,
@@ -178,9 +211,14 @@ public static class SettingsFormMapper
                     _ => ImageWatermarkPosition.BottomRight
                 }
             },
-            Ui = new UiSettings(form.OutputDirectory.Trim())
+            Ui = new UiSettings(form.OutputDirectory.Trim()) { OutputMode = form.OutputMode }
         };
     }
+
+    private static int ValidOrDefault(int value, int min, int max, int fallback) => value >= min && value <= max ? value : Math.Max(min, Math.Min(max, fallback));
+    private static bool IsColor(string value) => value.Length == 7 && value[0] == '#' && value.Substring(1).All(Uri.IsHexDigit);
+    private static bool IsTemplate(string value) => value.Length > 0 && value.IndexOfAny(System.IO.Path.GetInvalidFileNameChars()) < 0 &&
+        value.IndexOf(System.IO.Path.DirectorySeparatorChar) < 0 && value.IndexOf(System.IO.Path.AltDirectorySeparatorChar) < 0;
 
     private static int ParseOrDefault(string value, int fallback) => int.TryParse(value, out var parsed) ? parsed : fallback;
     private static long ParseLongOrDefault(string value, long fallback) => long.TryParse(value, out var parsed) ? parsed : fallback;
@@ -199,13 +237,15 @@ public static class ImageProcessingOptionsMapper
                 settings.Compress.Quality,
                 settings.Compress.UseTargetSize
                     ? new TargetSizeOptions(settings.Compress.TargetBytes, settings.Compress.AllowExceedTarget, AllowResizeForTarget: settings.Compress.AllowResizeForTarget)
-                    : null),
+                    : null,
+                settings.Compress.Preference,
+                settings.Compress.ContentKind),
             new ImageTransformOptions(
                 AutoOrient: settings.Processing.AutoOrient,
                 Resize: settings.Resize.Enabled
                     ? new ImageResizeOptions(true, settings.Resize.Width, settings.Resize.Height, settings.Resize.PreserveAspectRatio)
                     : null,
-                BrightnessPercent: settings.Graph.BrightnessPercent,
+                BrightnessPercent: settings.Graph.IsBrightnessEnabled ? settings.Graph.BrightnessPercent : 100,
             Watermark: settings.Watermark.Enabled
                 ? new ImageWatermarkOptions(
                     true,

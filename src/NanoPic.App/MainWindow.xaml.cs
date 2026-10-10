@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -31,17 +31,23 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _queuedPaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly SupportedImageFileScanner _scanner = new();
     private readonly ImageFileProcessingService _processor = new(new WicImageCodec());
-    private readonly WicImageCodec _previewCodec = new();
     private readonly BoundedImageBatchProcessor _batchProcessor;
     private readonly IImageProcessingCapabilityProvider _capabilities = new DefaultImageProcessingCapabilityProvider();
     private readonly JsonSettingsStore _settingsStore = new(JsonSettingsStore.GetDefaultSettingsPath());
     private readonly RedactingFileLogger _logger = new(GetDefaultLogPath());
     private readonly QueueImportCoordinator _importCoordinator;
     private CancellationTokenSource? _runCancellation;
+    private Task _runTask = Task.CompletedTask;
+    private string? _batchStatus;
+    private string _importNotice = string.Empty;
+    private int _addedDuringBatch;
+    private bool _queueStatusRefreshPending;
+    private Task _previewCleanupTask = Task.CompletedTask;
     private NanoPicSettings _settings = NanoPicSettings.Default;
     private Task _settingsLoadTask = Task.CompletedTask;
     private bool _closeInProgress;
     private bool _closeCommitted;
+    private readonly HashSet<string> _previewsOpening = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Window> _previewWindows = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentQueue<ShellAddRequest> _pendingShellRequests = new();
     private readonly ShellIntegrationHost? _shellHost;
@@ -83,6 +89,7 @@ public partial class MainWindow : Window
         if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
         {
             _queuedPaths.Clear();
+            ResetQueueSummary();
             foreach (var item in _items)
             {
                 if (QueueImportCoordinator.TryNormalize(item.Path, out var normalized))
@@ -91,11 +98,13 @@ public partial class MainWindow : Window
                 }
             }
 
+            ScheduleQueueStatusRefresh();
             return;
         }
 
         foreach (var removed in e.OldItems?.Cast<QueueItem>() ?? Enumerable.Empty<QueueItem>())
         {
+            PropertyChangedEventManager.RemoveHandler(removed, QueueSelectionChanged, nameof(QueueItem.IsSelected));
             if (QueueImportCoordinator.TryNormalize(removed.Path, out var normalized))
             {
                 _queuedPaths.Remove(normalized);
@@ -104,11 +113,43 @@ public partial class MainWindow : Window
 
         foreach (var addedItem in e.NewItems?.Cast<QueueItem>() ?? Enumerable.Empty<QueueItem>())
         {
+            PropertyChangedEventManager.AddHandler(addedItem, QueueSelectionChanged, nameof(QueueItem.IsSelected));
             if (QueueImportCoordinator.TryNormalize(addedItem.Path, out var normalized))
             {
                 _queuedPaths.Add(normalized);
             }
         }
+        if (_runCancellation is not null) _addedDuringBatch += e.NewItems?.Count ?? 0;
+        else ResetQueueSummary();
+        ScheduleQueueStatusRefresh();
+    }
+
+    private void QueueSelectionChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is QueueItem item &&
+            (!QueueImportCoordinator.TryNormalize(item.Path, out var normalized) || !_queuedPaths.Contains(normalized))) return;
+        if (_runCancellation is null) ResetQueueSummary();
+        ScheduleQueueStatusRefresh();
+    }
+
+    // Coalesce bulk imports and selection changes instead of recounting the full queue per item.
+    private void ScheduleQueueStatusRefresh()
+    {
+        if (_queueStatusRefreshPending || _closeCommitted) return;
+        _queueStatusRefreshPending = true;
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _queueStatusRefreshPending = false;
+            if (!_closeCommitted) RefreshUi();
+        }), System.Windows.Threading.DispatcherPriority.DataBind);
+    }
+
+    private void ResetQueueSummary()
+    {
+        _batchStatus = null;
+        _addedDuringBatch = 0;
+        _importNotice = string.Empty;
+        if (Progress is not null) Progress.Visibility = Visibility.Collapsed;
     }
 
     private sealed class QueueSink : IQueueImportSink
@@ -180,7 +221,7 @@ public partial class MainWindow : Window
         _shellRequestDrainScheduled = false;
         // 导入必须发生在设置加载之后，避免与 Loaded 阶段的初始化竞争。
         await _settingsLoadTask;
-        while (_pendingShellRequests.TryDequeue(out var request))
+        while (!_closeInProgress && !_closeCommitted && _pendingShellRequests.TryDequeue(out var request))
         {
             if (request.ActivateWindow)
             {
@@ -254,6 +295,9 @@ public partial class MainWindow : Window
                 _runCancellation.Cancel();
             }
 
+            await _runTask;
+            foreach (var path in _previewWindows.Keys.ToArray()) await InvalidatePreviewAsync(path);
+            await _previewCleanupTask;
             await _settingsLoadTask;
             var save = await _settingsStore.SaveAsync(CaptureSettings(), CancellationToken.None);
             if (!save.Saved && save.Failure is not null)
@@ -313,7 +357,8 @@ public partial class MainWindow : Window
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            ProgressText.Text = "导入过程中发生读取错误，详情见日志。";
+            _importNotice = "部分图片无法读取，详情见日志。";
+            RefreshUi();
             await WriteLogAsync("ERROR", $"导入失败：{exception.Message}", exception);
             return new ImportSummary(0, 0, Array.Empty<ImportIssue>());
         }
@@ -330,7 +375,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        ProgressText.Text = summary.BuildStatusText();
+        var notices = new List<string>();
+        if (summary.Duplicated > 0) notices.Add($"重复 {summary.Duplicated} 张，未再次添加");
+        if (summary.Issues.Count > 0) notices.Add($"未添加 {summary.Issues.Count} 项（悬停查看原因）");
+        QueueNoticeText.ToolTip = summary.Issues.Count > 0 ? summary.BuildIssueSummary() : null;
+        _importNotice = string.Join(" · ", notices);
+        RefreshUi();
         foreach (var issue in summary.Issues)
         {
             await WriteLogAsync(
@@ -374,16 +424,45 @@ public partial class MainWindow : Window
 
     private void QueueGrid_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (ItemsControl.ContainerFromElement(QueueGrid, e.OriginalSource as DependencyObject) is DataGridRow row && !row.IsSelected)
+        var row = ItemsControl.ContainerFromElement(QueueGrid, e.OriginalSource as DependencyObject) as DataGridRow;
+        SelectContextItem(row?.Item as QueueItem);
+    }
+
+    private void SelectContextItem(QueueItem? item)
+    {
+        // A right-click inside an existing multi-selection preserves it; empty space has no target.
+        if (item is null || !QueueGrid.SelectedItems.Contains(item))
         {
             QueueGrid.SelectedItems.Clear();
-            row.IsSelected = true;
+            if (item is not null) QueueGrid.SelectedItem = item;
         }
+        RefreshQueueContextMenu();
+    }
+
+    private void QueueGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => RefreshQueueContextMenu();
+
+    private void QueueGrid_ContextMenuOpening(object sender, ContextMenuEventArgs e)
+    {
+        RefreshQueueContextMenu();
+        if (QueueGrid.SelectedItems.Count == 0) e.Handled = true;
+    }
+
+    private void RefreshQueueContextMenu()
+    {
+        if (QueueRemoveMenuItem is null) return;
+        var selected = GetHighlightedItems();
+        var idle = _runCancellation is null && !_closeInProgress;
+        QueueRemoveMenuItem.IsEnabled = idle && selected.Length > 0;
+        QueueRemoveMenuItem.Header = selected.Length > 1 ? $"从列表移除（{selected.Length} 张）" : "从列表移除";
+        QueueRemoveMenuItem.ToolTip = idle ? "只移除当前选中的行，不删除原文件" : "处理期间不能移除，请先取消或等待完成";
+        QueueRetryMenuItem.Visibility = selected.Any(item => item.HasFailure) ? Visibility.Visible : Visibility.Collapsed;
+        QueueRetryMenuItem.IsEnabled = idle;
+        QueueFolderMenuItem.IsEnabled = selected.Length == 1;
+        QueuePreviewMenuItem.IsEnabled = selected.Length == 1 &&
+            (_runCancellation is null || (!selected[0].IsPending && !selected[0].IsProcessing));
     }
 
     private void PreviewHighlighted_Click(object sender, RoutedEventArgs e) => PreviewHighlighted();
-    private void CheckHighlighted_Click(object sender, RoutedEventArgs e) => SetHighlightedSelection(true);
-    private void UncheckHighlighted_Click(object sender, RoutedEventArgs e) => SetHighlightedSelection(false);
     private void RemoveHighlighted_Click(object sender, RoutedEventArgs e) => RemoveHighlighted();
     private void RetryHighlighted_Click(object sender, RoutedEventArgs e)
     {
@@ -394,7 +473,7 @@ public partial class MainWindow : Window
 
     private void OpenContainingFolder_Click(object sender, RoutedEventArgs e)
     {
-        if (QueueGrid.SelectedItem is not QueueItem item || !File.Exists(item.Path)) return;
+        if (QueueGrid.SelectedItems.Count != 1 || QueueGrid.SelectedItem is not QueueItem item || !File.Exists(item.Path)) return;
         try
         {
             Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{item.Path}\"") { UseShellExecute = true });
@@ -403,13 +482,6 @@ public partial class MainWindow : Window
         {
             System.Windows.MessageBox.Show(this, "打开所在文件夹失败。", "无法打开文件夹", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
-    }
-
-    private void SetHighlightedSelection(bool isSelected)
-    {
-        if (_runCancellation is not null) return;
-        foreach (var item in GetHighlightedItems()) item.IsSelected = isSelected;
-        RefreshUi();
     }
 
     private void RemoveHighlighted()
@@ -421,204 +493,51 @@ public partial class MainWindow : Window
 
     private QueueItem[] GetHighlightedItems() => QueueGrid.SelectedItems.Cast<QueueItem>().ToArray();
 
-    private async void PreviewHighlighted()
+    private async Task InvalidatePreviewAsync(string sourcePath)
     {
-        if (QueueGrid.SelectedItem is not QueueItem item || !File.Exists(item.Path)) return;
-        if (_previewWindows.TryGetValue(item.Path, out var existingPreview))
+        if (_previewWindows.TryGetValue(sourcePath, out var existing))
         {
-            existingPreview.Activate();
-            return;
-        }
-        var temporaryPath = Path.Combine(Path.GetTempPath(), $"nanopic-preview-{Guid.NewGuid():N}.png");
-        try
-        {
-            var effectiveSettings = CaptureSettings();
-            var safetyLimits = ImageSafetyLimits.Default with
-            {
-                MaxPixels = effectiveSettings.OversizedImage.SoftMaxPixels,
-                AutoDownscaleOnExceed = effectiveSettings.System.AutoDownscaleOnExceed
-            };
-
-            ImageFormat sourceFormat;
-            ImageHeaderInfo headerInfo;
-
-            using (var stream = new FileStream(
-                PortablePath.ForFileSystem(item.Path),
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                bufferSize: 65_536,
-                useAsync: false))
-            {
-                if (stream.Length > safetyLimits.MaxSourceBytes)
-                {
-                    await ReportPreviewFailureAsync(
-                        item,
-                        new ImageOperationFailure(
-                            ImageFailureKind.PixelBudgetExceeded,
-                            "图像文件大小超过安全处理上限，无法预览。"));
-                    return;
-                }
-
-                var detected = await ImageFileSignatureInspector.DetectAsync(stream, CancellationToken.None).ConfigureAwait(true);
-                if (!detected.IsSuccess || detected.Value == ImageFormat.Unknown)
-                {
-                    await ReportPreviewFailureAsync(
-                        item,
-                        detected.Failure ?? new ImageOperationFailure(
-                            ImageFailureKind.UnsupportedFormat,
-                            "无法识别所选图片的格式。"));
-                    return;
-                }
-
-                sourceFormat = detected.Value;
-                var probeResult = ImageDimensionProbe.Probe(stream, sourceFormat);
-                if (!probeResult.IsSuccess || probeResult.Value is null)
-                {
-                    await ReportPreviewFailureAsync(
-                        item,
-                        probeResult.Failure ?? new ImageOperationFailure(
-                            ImageFailureKind.DecodeFailed,
-                            "未能解析图像头部尺寸，无法安全预览。"));
-                    return;
-                }
-
-                headerInfo = probeResult.Value;
-            }
-
-            var swap = headerInfo.ExifOrientation is >= 5 and <= 8;
-            var plannedWidth = swap ? headerInfo.Height : headerInfo.Width;
-            var plannedHeight = swap ? headerInfo.Width : headerInfo.Height;
-
-            var preMetadata = new NanoPic.Core.ImageMetadata(
-                sourceFormat,
-                plannedWidth,
-                plannedHeight,
-                headerInfo.FrameCount ?? 1,
-                HasAlpha: false,
-                SourceBytes: item.Bytes,
-                ExifOrientation: headerInfo.ExifOrientation);
-
-            var safetyResult = ImageSafetyValidator.ValidateWithAction(preMetadata, safetyLimits);
-            if (safetyResult.Action == SafetyAction.Reject)
-            {
-                await ReportPreviewFailureAsync(
-                    item,
-                    safetyResult.Failure ?? new ImageOperationFailure(
-                        ImageFailureKind.PixelBudgetExceeded,
-                        "图像尺寸超过安全上限，无法预览。"));
-                return;
-            }
-
-            var safeWidth = safetyResult.TargetWidth ?? plannedWidth;
-            var safeHeight = safetyResult.TargetHeight ?? plannedHeight;
-
-            const int previewMaxEdge = 2048;
-            int previewTargetWidth = safeWidth;
-            int previewTargetHeight = safeHeight;
-            if (previewTargetWidth > previewMaxEdge || previewTargetHeight > previewMaxEdge)
-            {
-                var ratio = Math.Min((double)previewMaxEdge / previewTargetWidth, (double)previewMaxEdge / previewTargetHeight);
-                previewTargetWidth = Math.Max(1, (int)Math.Round(previewTargetWidth * ratio));
-                previewTargetHeight = Math.Max(1, (int)Math.Round(previewTargetHeight * ratio));
-            }
-
-            var request = new ImageEncodeRequest(
-                item.Path,
-                temporaryPath,
-                sourceFormat,
-                ImageFormat.Png,
-                new ImageTransformOptions(
-                    AutoOrient: true,
-                    Resize: new ImageResizeOptions(
-                        Enabled: true,
-                        Width: previewTargetWidth,
-                        Height: previewTargetHeight,
-                        PreserveAspectRatio: true)),
-                new ImageEncodingOptions(ImageOutputFormat.Png),
-                ImageSafetyLimits.Default with
-                {
-                    MaxWidth = int.MaxValue,
-                    MaxHeight = int.MaxValue,
-                    MaxPixels = long.MaxValue,
-                    AutoDownscaleOnExceed = true
-                });
-
-            var encoded = await Task.Run(() => _previewCodec.TransformAndEncodeAsync(request, CancellationToken.None))
-                .ConfigureAwait(true);
-            if (!encoded.IsSuccess)
-            {
-                var previewFailure = encoded.Failure ?? new ImageOperationFailure(
-                    ImageFailureKind.EncodeFailed,
-                    "预览编码失败，但没有返回详细原因。");
-                await ReportPreviewFailureAsync(item, previewFailure);
-                return;
-            }
-            if (encoded.Value?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
-            {
-                await WriteLogAsync(
-                    "WARN",
-                    $"预览已自动清理不兼容元数据（{encoded.Value.MetadataFallbackLevel}）。{encoded.Value.MetadataFallbackNotice}",
-                    null);
-            }
-
-            var image = new BitmapImage();
-            image.BeginInit();
-            image.CacheOption = BitmapCacheOption.OnLoad;
-            image.UriSource = new Uri(temporaryPath);
-            image.EndInit();
-            image.Freeze();
-            var preview = new Window
-            {
-                Title = item.FileName,
-                Width = 800,
-                Height = 600,
-                MinWidth = 480,
-                MinHeight = 360,
-                Owner = this,
-                Background = System.Windows.Media.Brushes.White,
-                Content = new System.Windows.Controls.Image { Source = image, Stretch = Stretch.Uniform }
-            };
-            System.Windows.Automation.AutomationProperties.SetName(preview, $"图片预览：{item.FileName}");
-            preview.PreviewKeyDown += (_, e) =>
-            {
-                if (e.Key == System.Windows.Input.Key.Escape)
-                {
-                    preview.Close();
-                }
-            };
-            _previewWindows[item.Path] = preview;
-            preview.Closed += (_, _) => _previewWindows.Remove(item.Path);
-            preview.Show();
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or NotSupportedException)
-        {
-            var previewFailure = new ImageOperationFailure(
-                exception is UnauthorizedAccessException or IOException
-                    ? ImageFailureKind.FileAccessConflict
-                    : ImageFailureKind.DecodeFailed,
-                "无法读取或生成所选图片的预览。",
-                exception);
-            await ReportPreviewFailureAsync(item, previewFailure);
-        }
-        finally
-        {
-            try { File.Delete(temporaryPath); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            _previewWindows.Remove(sourcePath);
+            if (existing is ComparisonPreviewWindow comparison) await comparison.CloseAndWaitAsync();
+            else existing.Close();
         }
     }
 
-    private async Task ReportPreviewFailureAsync(QueueItem item, ImageOperationFailure failure)
+    private void InvalidatePreview(string sourcePath)
     {
-        await WriteLogAsync(
-            "ERROR",
-            $"图片预览失败：{item.Path}。{failure.DiagnosticMessage}",
-            failure.Exception);
-        System.Windows.MessageBox.Show(
-            this,
-            failure.DiagnosticMessage,
-            "预览失败",
-            MessageBoxButton.OK,
-            MessageBoxImage.Warning);
+        if (_previewWindows.TryGetValue(sourcePath, out var existing))
+        {
+            _previewWindows.Remove(sourcePath);
+            existing.Close();
+        }
+    }
+
+    private async void PreviewHighlighted()
+    {
+        if (_closeInProgress || _closeCommitted) return;
+        if (QueueGrid.SelectedItems.Count != 1 || QueueGrid.SelectedItem is not QueueItem item || !File.Exists(item.Path)) return;
+        if (_runCancellation is not null && (item.IsPending || item.IsProcessing)) return;
+        if (!_previewsOpening.Add(item.Path)) return;
+        try
+        {
+            await InvalidatePreviewAsync(item.Path);
+            if (_closeInProgress || _closeCommitted || (_runCancellation is not null && (item.IsPending || item.IsProcessing))) return;
+            var settings = CaptureSettings();
+            var preview = new ComparisonPreviewWindow(item.Path, item.OutputPath, ImageSafetyLimits.Default with
+            {
+                MaxPixels = settings.OversizedImage.SoftMaxPixels,
+                AutoDownscaleOnExceed = settings.System.AutoDownscaleOnExceed
+            }) { Owner = this };
+            _previewWindows[item.Path] = preview;
+            preview.Closed += (_, _) =>
+            {
+                _previewWindows.Remove(item.Path);
+                var cleanup = preview.CloseAndWaitAsync();
+                _previewCleanupTask = _previewCleanupTask.IsCompleted ? cleanup : Task.WhenAll(_previewCleanupTask, cleanup);
+            };
+            preview.Show();
+        }
+        finally { _previewsOpening.Remove(item.Path); }
     }
 
     private void Window_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -635,7 +554,7 @@ public partial class MainWindow : Window
         switch (action)
         {
             case ApplicationShortcutAction.Cancel:
-                _runCancellation?.Cancel();
+                Cancel_Click(this, new RoutedEventArgs());
                 break;
             case ApplicationShortcutAction.Start:
                 Start_Click(StartButton, new RoutedEventArgs());
@@ -679,7 +598,47 @@ public partial class MainWindow : Window
 
     private async void Start_Click(object sender, RoutedEventArgs e)
     {
+        if (_runCancellation is not null || _closeInProgress || _closeCommitted) return;
+        var cancellation = new CancellationTokenSource();
+        var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _runCancellation = cancellation;
+        _runTask = completion.Task; // Installed before any await or modal event pump.
         var selected = _items.Where(item => item.IsSelected).ToArray();
+        _addedDuringBatch = 0;
+        StartButton.IsEnabled = false; CancelButton.IsEnabled = true; QueueEditPanel.IsEnabled = false;
+        RefreshQueueContextMenu();
+        try
+        {
+            await RunBatchAsync(selected, cancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            foreach (var item in selected.Where(item => item.IsPending || item.IsProcessing)) item.MarkCanceled();
+            SetBatchStatus("本次处理已取消");
+        }
+        catch (Exception exception)
+        {
+            foreach (var item in selected.Where(item => item.IsPending || item.IsProcessing))
+                item.MarkFailure(ImageFailureKind.Unknown, "无法完成本次处理。请重试。");
+            SetBatchStatus("无法准备本次处理，请重试");
+            await WriteLogAsync("ERROR", "批处理准备失败。", exception);
+            if (!_closeInProgress) System.Windows.MessageBox.Show(this, "无法准备本次处理，详细信息已记录。", "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            cancellation.Dispose();
+            if (ReferenceEquals(_runCancellation, cancellation)) _runCancellation = null;
+            StartButton.IsEnabled = !_closeInProgress && !_closeCommitted;
+            CancelButton.IsEnabled = false; QueueEditPanel.IsEnabled = !_closeInProgress && !_closeCommitted;
+            Progress.IsIndeterminate = false;
+            Progress.Visibility = Visibility.Collapsed;
+            RefreshUi();
+            completion.TrySetResult(true);
+        }
+    }
+
+    private async Task RunBatchAsync(QueueItem[] selected, CancellationToken cancellationToken)
+    {
         if (selected.Length == 0 && _items.Count > 0)
         {
             System.Windows.MessageBox.Show(this, "请至少勾选一个要处理的文件。", "NanoPic", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -697,27 +656,38 @@ public partial class MainWindow : Window
             System.Windows.MessageBox.Show(this, settingsFailure.UserMessage, "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        var inputRoot = PreserveOutput.IsChecked.GetValueOrDefault()
+        var outputMode = effectiveSettings.Ui.OutputMode;
+        var overwrite = outputMode == OutputDirectoryMode.SourceDirectory;
+        var inputRoot = outputMode == OutputDirectoryMode.PreserveDirectoryStructure
             ? InputRootDirectoryResolver.FindCommonDirectory(selected.Select(item => item.Path))
             : null;
-        if (PreserveOutput.IsChecked.GetValueOrDefault() && inputRoot is null)
+        if (outputMode == OutputDirectoryMode.PreserveDirectoryStructure && inputRoot is null)
         {
             System.Windows.MessageBox.Show(this, "所选文件没有可用的公共输入目录，无法保留文件夹结构。", "设置无效", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
+        await _previewCleanupTask;
+        cancellationToken.ThrowIfCancellationRequested();
+        _importNotice = string.Empty;
+        Progress.Visibility = Visibility.Visible; Progress.Value = 0; Progress.IsIndeterminate = true;
+        SetBatchStatus("正在检查图片与保存位置…");
         var jobs = new List<(QueueItem Item, ImageFileProcessRequest Request)>();
         var planningFailures = 0;
         for (var i = 0; i < selected.Length; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var item = selected[i];
+            await InvalidatePreviewAsync(item.Path);
+            cancellationToken.ThrowIfCancellationRequested();
             var output = BuildOutputPath(
                 item.Path,
                 inputRoot,
                 outputRoot,
                 encoding.OutputFormat,
                 effectiveSettings.Compress.OutputFilenameTemplate,
-                effectiveSettings.Compress.OutputIndex + i);
+                effectiveSettings.Compress.OutputIndex + i,
+                outputMode);
             if (!output.IsSuccess || output.Value is null)
             {
                 var planningFailure = output.Failure ?? new ImageOperationFailure(
@@ -729,7 +699,7 @@ public partial class MainWindow : Window
                 continue;
             }
 
-            item.MarkProcessing();
+            item.MarkPending();
             jobs.Add((item, new ImageFileProcessRequest(
                 item.Path,
                 output.Value,
@@ -740,20 +710,36 @@ public partial class MainWindow : Window
                     MaxPixels = effectiveSettings.OversizedImage.SoftMaxPixels,
                     AutoDownscaleOnExceed = effectiveSettings.System.AutoDownscaleOnExceed
                 },
-                OverwriteOutput.IsChecked.GetValueOrDefault() ? OutputConflictPolicy.Overwrite : effectiveSettings.Compress.ConflictPolicy)));
+                overwrite ? OutputConflictPolicy.Overwrite : effectiveSettings.Compress.ConflictPolicy)));
         }
 
-        _runCancellation = new CancellationTokenSource();
-        StartButton.IsEnabled = false; CancelButton.IsEnabled = true; QueueEditPanel.IsEnabled = false; Progress.Visibility = Visibility.Visible; Progress.Value = 0;
+        cancellationToken.ThrowIfCancellationRequested();
+        Progress.Visibility = Visibility.Visible; Progress.Value = 0;
+        var acceptingProgress = true;
         try
         {
             // Pre-scan image metadata using header probe to compute oversized-image concurrency limits.
-            var pixelCounts = await PreScanPixelCountsAsync(jobs, _runCancellation.Token);
+            var pixelCounts = await PreScanPixelCountsAsync(jobs, cancellationToken);
 
+            var applied = new bool[jobs.Count];
             var progress = new Progress<ImageBatchProgress>(value =>
             {
+                if (!acceptingProgress) return;
+                if (value.Item is { } update)
+                {
+                    var item = jobs[update.Index].Item;
+                    if (update.Result is { } result)
+                    {
+                        if (!applied[update.Index]) ApplyItemResult(item, result);
+                        applied[update.Index] = true;
+                    }
+                    else if (!applied[update.Index]) item.MarkProcessing();
+                }
+                Progress.IsIndeterminate = false;
                 Progress.Value = selected.Length == 0 ? 0 : (value.Completed + planningFailures) * 100d / selected.Length;
-                ProgressText.Text = $"成功 {value.Succeeded}，失败 {value.Failed + planningFailures}，取消 {value.Canceled}，最大并发 {effectiveSettings.System.MaxThreads}";
+                SetBatchStatus(cancellationToken.IsCancellationRequested
+                    ? "正在取消，请稍候…"
+                    : $"已处理 {value.Completed + planningFailures} / {selected.Length} 张");
             });
 
             var batch = await _batchProcessor.ProcessAsync(
@@ -761,51 +747,29 @@ public partial class MainWindow : Window
                 effectiveSettings.System.MaxThreads,
                 pixelCounts,
                 progress,
-                _runCancellation.Token);
+                cancellationToken,
+                selected.Select(item => item.Path).ToArray());
 
+            acceptingProgress = false;
             for (var i = 0; i < jobs.Count; i++)
             {
                 var item = jobs[i].Item;
                 var result = batch.Items[i];
+                if (!applied[i]) ApplyItemResult(item, result);
                 if (result.IsSuccess)
                 {
                     var processResult = result.Value;
-                    item.MarkSuccess(
-                        processResult?.Output?.ExceededTarget == true,
-                        processResult?.OutputPath,
-                        processResult?.SkippedExistingOutput == true,
-                        processResult?.FrameNotice,
-                        processResult?.Output?.MetadataFallbackNotice);
-                    if (processResult is not null)
+                    if (processResult?.Output?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
                     {
-                        item.Detail = BuildSuccessDetail(processResult);
-                        if (processResult.Output?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
-                        {
-                            await WriteLogAsync(
-                                "WARN",
-                                $"图像编码已自动清理不兼容元数据（{processResult.Output.MetadataFallbackLevel}）。{processResult.Output.MetadataFallbackNotice}",
-                                null);
-                        }
-                        if (string.Equals(processResult.OutputPath, item.Path, StringComparison.OrdinalIgnoreCase))
-                        {
-                            // 覆盖原文件模式：输出写回了源文件本身，刷新队列中的大小显示。
-                            try
-                            {
-                                item.UpdateBytes(new FileInfo(processResult.OutputPath).Length);
-                            }
-                            catch (IOException)
-                            {
-                            }
-                            catch (UnauthorizedAccessException)
-                            {
-                            }
-                        }
+                        await WriteLogAsync(
+                            "WARN",
+                            $"图像编码已自动清理不兼容元数据（{processResult.Output.MetadataFallbackLevel}）。{processResult.Output.MetadataFallbackNotice}",
+                            null);
                     }
                 }
                 else
                 {
                     var failureResult = result.Failure ?? new ImageOperationFailure(ImageFailureKind.DecodeFailed, "处理失败，但没有返回详细原因。");
-                    item.MarkFailure(failureResult);
                     await WriteLogAsync("ERROR", $"图像处理失败：{item.Path}。{failureResult.DiagnosticMessage}", failureResult.Exception);
                 }
             }
@@ -814,11 +778,13 @@ public partial class MainWindow : Window
                 .Where(result => result.IsSuccess && result.Value?.Output?.MetadataFallbackLevel > ImageMetadataFallbackLevel.Full)
                 .Select(result => result.Value!.Output!.MetadataFallbackLevel)
                 .ToArray();
-            var metadataFallbackSummary = metadataFallbacks.Length == 0
-                ? string.Empty
-                : $"，元数据清理 {metadataFallbacks.Length}";
             Progress.Value = 100;
-            ProgressText.Text = $"成功 {batch.Progress.Succeeded}，失败 {batch.Progress.Failed + planningFailures}，取消 {batch.Progress.Canceled}{metadataFallbackSummary}，共 {selected.Length}";
+            var skipped = batch.Items.Count(result => result.IsSuccess && result.Value?.SkippedExistingOutput == true);
+            var resultParts = new List<string> { $"本次完成 {batch.Progress.Succeeded - skipped} 张" };
+            if (batch.Progress.Failed + planningFailures > 0) resultParts.Add($"失败 {batch.Progress.Failed + planningFailures} 张");
+            if (skipped > 0) resultParts.Add($"跳过 {skipped} 张");
+            if (batch.Progress.Canceled > 0) resultParts.Add($"取消 {batch.Progress.Canceled} 张");
+            SetBatchStatus(string.Join(" · ", resultParts));
             var levelSummary = metadataFallbacks.Length == 0
                 ? ""
                 : "，降级分布 " + string.Join(", ", metadataFallbacks
@@ -833,7 +799,7 @@ public partial class MainWindow : Window
             {
                 item.MarkCanceled();
             }
-            ProgressText.Text = "批处理已取消。";
+            SetBatchStatus("本次处理已取消");
             await WriteLogAsync("INFO", "批处理已被用户取消。", null);
         }
         catch (OutOfMemoryException oom)
@@ -846,9 +812,9 @@ public partial class MainWindow : Window
             {
                 item.MarkFailure(batchFailure);
             }
-            ProgressText.Text = "系统内存不足，批处理已停止。";
+            SetBatchStatus("内存不足，本次处理已停止");
             await WriteLogAsync("ERROR", $"批处理因系统内存不足停止。{batchFailure.DiagnosticMessage}", oom);
-            System.Windows.MessageBox.Show(this, batchFailure.DiagnosticMessage, "内存不足", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (!_closeInProgress) System.Windows.MessageBox.Show(this, batchFailure.DiagnosticMessage, "内存不足", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         catch (Exception exception)
         {
@@ -860,20 +826,53 @@ public partial class MainWindow : Window
             {
                 item.MarkFailure(batchFailure);
             }
-            ProgressText.Text = "批处理发生错误。";
+            SetBatchStatus("本次处理出错，请查看图片状态");
             await WriteLogAsync("ERROR", $"批处理发生未捕获异常。{batchFailure.DiagnosticMessage}", exception);
-            System.Windows.MessageBox.Show(this, batchFailure.DiagnosticMessage, "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
+            if (!_closeInProgress) System.Windows.MessageBox.Show(this, batchFailure.DiagnosticMessage, "处理失败", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
-            _runCancellation?.Dispose();
-            _runCancellation = null;
-            StartButton.IsEnabled = true;
-            CancelButton.IsEnabled = false;
-            QueueEditPanel.IsEnabled = true;
-            RefreshUi();
+            acceptingProgress = false;
+
         }
     }
+
+    private void ApplyItemResult(QueueItem item, ImageOperationResult<ImageFileProcessResult> result)
+    {
+        InvalidatePreview(item.Path);
+        if (!result.IsSuccess)
+        {
+            item.MarkFailure(result.Failure ?? new ImageOperationFailure(
+                ImageFailureKind.DecodeFailed, "处理失败，但没有返回详细原因。"));
+            return;
+        }
+        var processResult = result.Value;
+        item.MarkSuccess(
+            processResult?.Output?.ExceededTarget == true,
+            processResult?.OutputPath,
+            processResult?.SkippedExistingOutput == true,
+            processResult?.FrameNotice,
+            processResult?.Output?.MetadataFallbackNotice,
+            processResult?.Output?.ReusedSource == true,
+            processResult?.Output?.MetadataNoteNotice);
+        if (processResult is null) return;
+        item.Detail = BuildSuccessDetail(processResult);
+        if (string.Equals(processResult.OutputPath, item.Path, StringComparison.OrdinalIgnoreCase))
+        {
+            // 覆盖原文件模式：输出写回了源文件本身，刷新队列中的大小显示。
+            try
+            {
+                item.UpdateBytes(new FileInfo(processResult.OutputPath).Length);
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
+
 
     private async Task WriteLogAsync(string level, string message, Exception? exception)
     {
@@ -896,15 +895,21 @@ public partial class MainWindow : Window
         GpuCheck.IsChecked = gpu.IsAvailable && requested;
         GpuCheck.Content = gpu.IsAvailable ? "GPU 加速" : "GPU 当前不可用（使用 CPU）";
         GpuCheck.ToolTip = gpu.Message;
-        if (requested && !gpu.IsAvailable)
-        {
-            ProgressText.Text = gpu.Message;
-        }
     }
 
     private static string BuildSuccessDetail(ImageFileProcessResult result)
     {
         var details = new List<string>();
+        if (result.Output?.DetectedContent is { } content)
+            details.Add(content == ImageContentKind.TextOrScreenshot ? "已按文字 / 截图保护细节。" : "已按照片处理。");
+        if (result.Output?.QualityNotice is { } qualityNotice) details.Add(qualityNotice);
+        if (result.Output?.MetadataNoteNotice is { } metadataNoteNotice) details.Add(metadataNoteNotice);
+        if (result.Output is { } output)
+        {
+            details.Add($"尺寸 {result.Source.Width}×{result.Source.Height} → {output.Metadata.Width}×{output.Metadata.Height}；体积 {result.Source.SourceBytes / 1024d:N1} KB → {output.Bytes / 1024d:N1} KB");
+            if (output.ExceededTarget) details.Add("输出超出目标大小（已允许超限）。");
+            if (output.ReusedSource) details.Add("重编码未能进一步减小体积，或原文件已满足目标；已保留原始文件数据。");
+        }
         if (!string.IsNullOrWhiteSpace(result.FrameNotice))
         {
             details.Add(result.FrameNotice!);
@@ -922,10 +927,7 @@ public partial class MainWindow : Window
         {
             details.Add(metadataFallbackNotice);
         }
-        if (details.Count == 0)
-        {
-            details.Add(result.OutputPath);
-        }
+        details.Add(result.OutputPath);
         return string.Join(Environment.NewLine, details);
     }
 
@@ -1005,15 +1007,23 @@ public partial class MainWindow : Window
         string outputRoot,
         ImageOutputFormat requested,
         string filenameTemplate,
-        int index)
+        int index,
+        OutputDirectoryMode mode)
     {
-        var format = requested == ImageOutputFormat.Original ? DetectFormatForPath(sourcePath) : requested.ToImageFormat();
-        if (format == ImageFormat.Unknown) return ImageOperationResult<string>.Failed(ImageFailureKind.UnsupportedFormat, "无法识别输入文件格式。");
-        var overwrite = OverwriteOutput.IsChecked.GetValueOrDefault();
-        var mode = overwrite ? OutputDirectoryMode.SourceDirectory : PreserveOutput.IsChecked.GetValueOrDefault() ? OutputDirectoryMode.PreserveDirectoryStructure : OutputDirectoryMode.SeparateDirectory;
-        return OutputPathPlanner.Plan(new OutputPathPlanRequest(
-            sourcePath, inputRoot, outputRoot, mode, overwrite ? "{name}" : filenameTemplate, format, index,
-            PreserveSourceExtension: requested == ImageOutputFormat.Original));
+        if (!File.Exists(sourcePath)) return ImageOperationResult<string>.Failed(ImageFailureKind.FileAccessConflict, "输入文件已不存在，请移除后重试。");
+        try
+        {
+            var format = requested == ImageOutputFormat.Original ? DetectFormatForPath(sourcePath) : requested.ToImageFormat();
+            if (format == ImageFormat.Unknown) return ImageOperationResult<string>.Failed(ImageFailureKind.UnsupportedFormat, "无法识别输入文件格式。");
+            var overwrite = mode == OutputDirectoryMode.SourceDirectory;
+            return OutputPathPlanner.Plan(new OutputPathPlanRequest(
+                sourcePath, inputRoot, outputRoot, mode, overwrite ? "{name}" : filenameTemplate, format, index,
+                PreserveSourceExtension: requested == ImageOutputFormat.Original));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return ImageOperationResult<string>.Failed(ImageFailureKind.FileAccessConflict, "无法读取输入或规划保存位置。", ex);
+        }
     }
 
     private static ImageFormat DetectFormatForPath(string path)
@@ -1047,7 +1057,8 @@ public partial class MainWindow : Window
     {
         failure = string.Empty; encoding = default!; transforms = default!;
         var useTargetSize = TargetSizeMode.IsChecked == true;
-        if (!useTargetSize && (!int.TryParse(QualityBox.Text, out var quality) || quality is < 1 or > 100))
+        if (!useTargetSize && CompressionPreferenceBox.SelectedIndex == 1 && (FormatBox.SelectedIndex is 0 or 1 or 2 or 7) &&
+            (!int.TryParse(QualityBox.Text, out var quality) || quality is < 1 or > 100))
         { failure = "质量必须是 1 到 100 之间的整数。"; return false; }
         var targetValue = 1L;
         var targetUnitBytes = TargetSizeUnitBox.SelectedIndex == 1 ? 1024L * 1024 : 1024L;
@@ -1061,22 +1072,22 @@ public partial class MainWindow : Window
         { failure = "启用亮度调整时，亮度必须是 0 到 200 之间的整数。"; return false; }
         if (WatermarkCheck.IsChecked == true && string.IsNullOrWhiteSpace(WatermarkBox.Text))
         { failure = "启用文字水印时，请输入水印文字。"; return false; }
-        if (!int.TryParse(OutputIndexBox.Text, out var outputIndex) || outputIndex < 1)
+        if (OverwriteOutput.IsChecked != true && (!int.TryParse(OutputIndexBox.Text, out var outputIndex) || outputIndex < 1))
         { failure = "输出起始序号必须是大于 0 的整数。"; return false; }
         var filenameTemplate = string.IsNullOrWhiteSpace(FilenameTemplateBox.Text)
             ? "{name}"
             : FilenameTemplateBox.Text.Trim();
-        if (filenameTemplate.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || filenameTemplate.Contains(Path.DirectorySeparatorChar) || filenameTemplate.Contains(Path.AltDirectorySeparatorChar))
+        if (OverwriteOutput.IsChecked != true && (filenameTemplate.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || filenameTemplate.Contains(Path.DirectorySeparatorChar) || filenameTemplate.Contains(Path.AltDirectorySeparatorChar)))
         { failure = "输出命名模板不能为空，也不能包含路径或无效文件名字符。"; return false; }
-        if (!IsRgbHex(BackgroundColorBox.Text))
+        if (FormatBox.SelectedIndex is 0 or 4 or 7 && !IsRgbHex(BackgroundColorBox.Text))
         { failure = "透明背景颜色必须使用 #RRGGBB 格式。"; return false; }
-        if (!IsRgbHex(WatermarkColorBox.Text))
+        if (WatermarkCheck.IsChecked == true && !IsRgbHex(WatermarkColorBox.Text))
         { failure = "水印颜色必须使用 #RRGGBB 格式。"; return false; }
-        if (!int.TryParse(WatermarkOpacityBox.Text, out var watermarkOpacity) || watermarkOpacity is < 0 or > 100)
+        if (WatermarkCheck.IsChecked == true && (!int.TryParse(WatermarkOpacityBox.Text, out var watermarkOpacity) || watermarkOpacity is < 0 or > 100))
         { failure = "水印透明度必须是 0 到 100 之间的整数。"; return false; }
-        if (!int.TryParse(WatermarkFontSizeBox.Text, out var watermarkFontSize) || watermarkFontSize is < 4 or > 256)
+        if (WatermarkCheck.IsChecked == true && (!int.TryParse(WatermarkFontSizeBox.Text, out var watermarkFontSize) || watermarkFontSize is < 4 or > 256))
         { failure = "水印字号必须是 4 到 256 之间的整数。"; return false; }
-        if (!int.TryParse(WatermarkMarginBox.Text, out var watermarkMargin) || watermarkMargin is < 0 or > 4096)
+        if (WatermarkCheck.IsChecked == true && (!int.TryParse(WatermarkMarginBox.Text, out var watermarkMargin) || watermarkMargin is < 0 or > 4096))
         { failure = "水印边距必须是 0 到 4096 之间的整数。"; return false; }
         var options = ImageProcessingOptionsMapper.FromSettings(CaptureSettings());
         encoding = options.Encoding;
@@ -1087,7 +1098,13 @@ public partial class MainWindow : Window
     private static bool IsRgbHex(string value) =>
         value.Length == 7 && value[0] == '#' && value.Substring(1).All(Uri.IsHexDigit);
 
-    private void Cancel_Click(object sender, RoutedEventArgs e) => _runCancellation?.Cancel();
+    private void Cancel_Click(object sender, RoutedEventArgs e)
+    {
+        if (_runCancellation is null) return;
+        _runCancellation.Cancel();
+        CancelButton.IsEnabled = false;
+        SetBatchStatus("正在取消，请稍候…");
+    }
     private void BrowseOutput_Click(object sender, RoutedEventArgs e) => ChooseOutputDirectory();
     private void OpenOutput_Click(object sender, RoutedEventArgs e)
     {
@@ -1114,6 +1131,15 @@ public partial class MainWindow : Window
         catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or IOException)
         {
             System.Windows.MessageBox.Show(this, "打开输出目录失败，请确认目录可以访问。", "无法打开输出目录", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void MoreActions_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is System.Windows.Controls.Button { ContextMenu: { } menu } button)
+        {
+            menu.PlacementTarget = button;
+            menu.IsOpen = true;
         }
     }
 
@@ -1510,7 +1536,7 @@ public partial class MainWindow : Window
         try
         {
             System.Windows.Clipboard.SetText(report);
-            ProgressText.Text = "右键菜单诊断信息已复制到剪贴板。";
+            SetShellFeedback("诊断信息已复制到剪贴板。");
         }
         catch (Exception exception) when (exception is System.Runtime.InteropServices.COMException or InvalidOperationException)
         {
@@ -1530,8 +1556,7 @@ public partial class MainWindow : Window
         var previousHint = ShellIntegrationHint.Text;
         ShellIntegrationCheck.IsEnabled = false;
         ShellIntegrationActions.IsEnabled = false;
-        ShellIntegrationHint.Text = "处理中…";
-        ProgressText.Text = busyText;
+        SetShellFeedback(busyText);
         try
         {
             var result = await Task.Run(() => operation(_shellHost.Registry));
@@ -1544,13 +1569,7 @@ public partial class MainWindow : Window
                 System.Windows.MessageBox.Show(this, result.UserMessage, "右键菜单集成", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
 
-            ProgressText.Text = result.Succeeded
-                ? state.Status == ShellIntegrationStatus.InstalledCurrent
-                    ? ShellIntegrationPresentation.IsWindows11OrLater
-                        ? "右键菜单已启用。" + ShellIntegrationPresentation.Windows11EntryNote
-                        : "右键菜单已启用。"
-                    : "右键菜单已移除。"
-                : "右键菜单操作未完成。";
+            SetShellFeedback(result.Succeeded ? string.Empty : "右键菜单操作未完成。");
             await WriteLogAsync(
                 result.Succeeded ? "INFO" : "WARN",
                 $"右键菜单集成操作完成：状态 {state.Status}，扩展 {state.RegisteredExtensionCount}/{state.ExpectedExtensionCount}。{result.UserMessage}",
@@ -1560,6 +1579,7 @@ public partial class MainWindow : Window
         {
             await WriteLogAsync("ERROR", $"右键菜单集成操作失败：{exception.Message}", exception);
             ShellIntegrationHint.Text = previousHint;
+            SetShellFeedback("操作失败，详情见日志。");
             System.Windows.MessageBox.Show(this, "右键菜单操作失败，详细信息已写入日志。", "右键菜单集成", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
@@ -1572,15 +1592,33 @@ public partial class MainWindow : Window
         }
     }
 
+    private void SetShellFeedback(string text)
+    {
+        ShellOperationText.Text = text;
+        ShellOperationText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+    }
+
+    private void SetBatchStatus(string text)
+    {
+        _batchStatus = text;
+        RefreshUi();
+    }
+
     private void RefreshUi()
     {
-        if (EmptyState is null || SummaryText is null)
-        {
-            return;
-        }
+        if (EmptyState is null || ProgressText is null || QueueNoticeText is null) return;
 
         EmptyState.Visibility = _items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
-        SummaryText.Text = $"已选 {_items.Count(item => item.IsSelected)} / 共 {_items.Count}";
+        var checkedCount = _runCancellation is null || _batchStatus is null
+            ? _items.Count(item => item.IsSelected) : 0;
+        ProgressText.Text = _batchStatus ?? $"已选 {checkedCount} 张，共 {_items.Count} 张";
+        RemoveCheckedButton.IsEnabled = _runCancellation is null && !_closeInProgress && checkedCount > 0;
+        RefreshQueueContextMenu();
+        var notices = new List<string>();
+        if (_addedDuringBatch > 0) notices.Add($"新增 {_addedDuringBatch} 张，下次处理");
+        if (!string.IsNullOrEmpty(_importNotice)) notices.Add(_importNotice);
+        QueueNoticeText.Text = string.Join(" · ", notices);
+        QueueNoticeText.Visibility = notices.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
     }
 
     private void RefreshSettingsUi()
@@ -1590,13 +1628,16 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (MetadataNoteCheck is null || MetadataNoteBox is null || BackgroundColorBox is null ||
+            ImageContentBox is null || CompressionPreferenceBox is null || SoftMaxPixelsBox is null || OutputIndexBox is null ||
+            WatermarkFields is null || MetadataNoteFields is null || ResizeFields is null) return;
         var useTargetSize = TargetSizeMode.IsChecked == true;
         var formatIndex = FormatBox?.SelectedIndex ?? 0;
 
         if (useTargetSize)
         {
             QualityBox.IsEnabled = false;
-            QualityBox.ToolTip = "按目标大小模式下由系统自动确定最佳压缩策略。";
+            QualityBox.ToolTip = "按所选优先策略搜索编码参数，不代表视觉无损保证。";
             TargetSizeBox.IsEnabled = true;
             TargetSizeUnitBox.IsEnabled = true;
             AllowExceedCheck.IsEnabled = true;
@@ -1624,7 +1665,7 @@ public partial class MainWindow : Window
             else if (formatIndex == 1) // PNG
             {
                 QualityBox.IsEnabled = true;
-                QualityBox.ToolTip = "PNG 质量用于颜色优化；100 为无损，数值越低通常体积越小，图片宽高不变。";
+                QualityBox.ToolTip = "PNG 质量控制有损减色；100 不主动减色，但不是任意源图的无损保证。";
             }
             else if (formatIndex is 3 or 4 or 5 or 6) // GIF, BMP, TIFF, ICO
             {
@@ -1637,6 +1678,40 @@ public partial class MainWindow : Window
                 QualityBox.ToolTip = "质量设置仅对 JPEG/WebP/PNG 生效。";
             }
         }
+
+        if (CompressionPreferenceBox is not null && CompressionPolicyHint is not null)
+        {
+            var fidelity = CompressionPreferenceBox.SelectedIndex != 1;
+            if (fidelity) QualityBox.IsEnabled = false;
+            QualityBox.Visibility = fidelity ? Visibility.Collapsed : Visibility.Visible;
+            QualityBox.ToolTip = fidelity
+                ? "保真优先自动使用保护参数；这些参数不是视觉无损保证。"
+                : "编码参数（1–100），不是体积或清晰度百分比；JPEG/WebP 的 100 不等于无损。PNG 小于 100 可能有损减色。";
+            CompressionPolicyHint.Text = fidelity
+                ? "优先保留细节，并抽查有损输出；不是无损保证。图片可能无法明显变小。"
+                : "优先减小文件，可能损失细节。手动质量不是文件大小或清晰度百分比。";
+            CompressionPreferenceBox.ToolTip = CompressionPolicyHint.Text;
+            if (ManualQualityPanel is not null) ManualQualityPanel.Visibility = !fidelity && !useTargetSize ? Visibility.Visible : Visibility.Collapsed;
+            if (TargetFallbackPanel is not null) TargetFallbackPanel.Visibility = useTargetSize ? Visibility.Visible : Visibility.Collapsed;
+            QualityMode.Content = !fidelity && !useTargetSize ? "常规压缩" : "自动压缩";
+        }
+
+        if (ResizeFields is not null) ResizeFields.Visibility = ResizeCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        if (MetadataNoteFields is not null) MetadataNoteFields.Visibility = MetadataNoteCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        if (WatermarkFields is not null) WatermarkFields.Visibility = WatermarkCheck.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+        var noteSupported = formatIndex is 0 or 1 or 5 or 7;
+        MetadataNoteCheck.IsEnabled = noteSupported;
+        if (!noteSupported && MetadataNoteCheck.IsChecked == true) MetadataNoteCheck.IsChecked = false;
+        MetadataNoteCheck.ToolTip = noteSupported
+            ? "JPEG、PNG、TIFF 可写入备注；保持原格式时，不支持的图片会在结果中提示。"
+            : "所选格式不支持图片备注，已关闭；已输入的文字仍保留。";
+        BackgroundColorBox.IsEnabled = formatIndex is 0 or 4 or 7;
+        BackgroundColorBox.ToolTip = BackgroundColorBox.IsEnabled ? "转成不支持透明的格式时，使用此颜色填充背景。" : "此格式保留透明，不使用背景色。";
+        var summary = SettingsSummary.FromSettings(CaptureSettings());
+        if (ImageTabButton is not null) ImageTabButton.Content = summary.ImageChanged ? "编辑图片 · 已设置" : "编辑图片";
+        if (CompressionAdvancedExpander is not null) CompressionAdvancedExpander.Header = summary.CompressionChanged ? "更多选项 · 已设置" : "更多选项";
+        if (NamingExpander is not null) NamingExpander.Header = summary.NamingChanged ? "文件命名 · 已设置" : "文件命名";
+        if (PreferencesExpander is not null) PreferencesExpander.Header = summary.PreferencesChanged ? "偏好设置 · 已设置" : "偏好设置";
 
         WidthBox.IsEnabled = ResizeCheck.IsChecked == true;
         HeightBox.IsEnabled = ResizeCheck.IsChecked == true;
@@ -1661,7 +1736,12 @@ public partial class MainWindow : Window
     private void ApplySettings(NanoPicSettings settings)
     {
         var form = SettingsFormMapper.ToForm(settings);
+        OverwriteOutput.IsChecked = form.OutputMode == OutputDirectoryMode.SourceDirectory;
+        PreserveOutput.IsChecked = form.OutputMode == OutputDirectoryMode.PreserveDirectoryStructure;
+        SeparateOutput.IsChecked = form.OutputMode == OutputDirectoryMode.SeparateDirectory;
         FormatBox.SelectedIndex = form.OutputFormatIndex;
+        CompressionPreferenceBox.SelectedIndex = form.CompressionPreferenceIndex;
+        ImageContentBox.SelectedIndex = form.ImageContentIndex;
         QualityBox.Text = form.Quality;
         QualityMode.IsChecked = !form.UseTargetSize;
         TargetSizeMode.IsChecked = form.UseTargetSize;
@@ -1772,7 +1852,10 @@ public partial class MainWindow : Window
         MetadataNoteBox.Text,
         AutoDownscaleCheck.IsChecked == true,
         SoftMaxPixelsBox.SelectedItem is ComboBoxItem selectedItem && selectedItem.Tag is string tag ? tag : "200",
-        AllowResizeForTargetCheck?.IsChecked == true));
+        AllowResizeForTargetCheck?.IsChecked == true,
+        CompressionPreferenceBox.SelectedIndex,
+        ImageContentBox.SelectedIndex,
+        OverwriteOutput.IsChecked == true ? OutputDirectoryMode.SourceDirectory : PreserveOutput.IsChecked == true ? OutputDirectoryMode.PreserveDirectoryStructure : OutputDirectoryMode.SeparateDirectory));
 }
 
 public sealed class QueueItem : INotifyPropertyChanged
@@ -1781,14 +1864,21 @@ public sealed class QueueItem : INotifyPropertyChanged
     private string _status = "等待";
     private string _detail = string.Empty;
     private ImageFailureKind? _failureKind;
+    private bool _metadataNoteWarning;
+    public bool HasMetadataNoteWarning => _metadataNoteWarning;
     public QueueItem(string path, long bytes) { Path = path; Bytes = bytes; }
     public string Path { get; }
+    public string? OutputPath { get; private set; }
     public long Bytes { get; private set; }
     public string FileName => System.IO.Path.GetFileName(Path);
     public string Directory => System.IO.Path.GetDirectoryName(Path) ?? string.Empty;
     public string SizeText => $"{Bytes / 1024d:N1} KB";
     public bool IsSelected { get => _isSelected; set { _isSelected = value; OnPropertyChanged(); } }
-    public string Status { get => _status; private set { _status = value; OnPropertyChanged(); } }
+    public string Status { get => _status; private set { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(DisplayStatus)); } }
+    public string DisplayStatus => _status.IndexOf("已超限", StringComparison.Ordinal) >= 0 ? "超过指定大小"
+        : _metadataNoteWarning ? "备注未写入"
+        : _status == "完成（保留原图）" ? "无需再压缩"
+        : _status.StartsWith("完成", StringComparison.Ordinal) ? "完成" : _status;
     public string Detail { get => _detail; set { _detail = value; OnPropertyChanged(); } }
     public bool HasFailure => _failureKind is not null && _failureKind != ImageFailureKind.TaskCanceled;
     public bool IsProcessing => string.Equals(_status, "处理中", StringComparison.Ordinal);
@@ -1802,22 +1892,30 @@ public sealed class QueueItem : INotifyPropertyChanged
         OnPropertyChanged(nameof(SizeText));
     }
 
-    public void MarkPending() { _failureKind = null; Status = "等待"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
-    public void MarkProcessing() { _failureKind = null; Status = "处理中"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
+    private void ClearNotice() { _metadataNoteWarning = false; OnPropertyChanged(nameof(HasMetadataNoteWarning)); }
+    public void MarkPending() { ClearNotice(); OutputPath = null; _failureKind = null; Status = "等待"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
+    public void MarkProcessing() { ClearNotice(); OutputPath = null; _failureKind = null; Status = "处理中"; Detail = string.Empty; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkSuccess(
         bool exceededTarget,
         string? outputPath,
         bool skipped,
         string? frameNotice = null,
-        string? metadataFallbackNotice = null)
+        string? metadataFallbackNotice = null,
+        bool reusedSource = false,
+        string? metadataNoteNotice = null)
     {
+        _metadataNoteWarning = !string.IsNullOrEmpty(metadataNoteNotice);
+        OnPropertyChanged(nameof(HasMetadataNoteWarning));
         _failureKind = null;
         Status = skipped ? "已跳过"
+            : reusedSource && exceededTarget ? "完成（保留原图，已超限）"
+            : reusedSource ? "完成（保留原图）"
             : exceededTarget && metadataFallbackNotice is not null ? "完成（已超限，已清理元数据）"
             : exceededTarget ? "完成（已超限）"
             : metadataFallbackNotice is not null ? "完成（已清理元数据）"
             : frameNotice is null ? "完成"
             : "完成（保留首帧）";
+        OutputPath = skipped ? null : outputPath;
         Detail = outputPath ?? string.Empty;
         OnPropertyChanged(nameof(HasFailure));
     }
@@ -1827,7 +1925,7 @@ public sealed class QueueItem : INotifyPropertyChanged
         MarkFailure(failure.Kind, failure.DiagnosticMessage);
     }
 
-    public void MarkFailure(ImageFailureKind kind, string message) { _failureKind = kind; Status = kind == ImageFailureKind.TaskCanceled ? "已取消" : "失败"; Detail = message; OnPropertyChanged(nameof(HasFailure)); }
+    public void MarkFailure(ImageFailureKind kind, string message) { ClearNotice(); OutputPath = null; _failureKind = kind; Status = kind == ImageFailureKind.TaskCanceled ? "已取消" : "失败"; Detail = message; OnPropertyChanged(nameof(HasFailure)); }
     public void MarkCanceled() => MarkFailure(ImageFailureKind.TaskCanceled, "已取消");
     public event PropertyChangedEventHandler? PropertyChanged; private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }

@@ -295,6 +295,7 @@ public sealed class ImageFileProcessingService
                     return new ImageOperationResult<ImageFileProcessResult>(default, verified.Failure);
                 }
 
+                cancellationToken.ThrowIfCancellationRequested();
                 var committedPath = CommitTemporaryFile(
                     temporaryPath,
                     destination.Value.Path,
@@ -478,7 +479,7 @@ public sealed class ImageFileProcessingService
         throw new IOException("无法完成输出文件落盘。");
     }
 
-    private static string ApplyOutputExtension(ImageFileProcessRequest request, ImageFormat outputFormat)
+    internal static string ApplyOutputExtension(ImageFileProcessRequest request, ImageFormat outputFormat)
     {
         var extension = ImageFileSignatureInspector.GetOutputExtension(
             outputFormat,

@@ -148,10 +148,15 @@ public sealed record TargetSizeOptions(
     int MaxQuality = 100,
     bool AllowResizeForTarget = false);
 
+public enum CompressionPreference { SizeFirst = 0, PreserveFidelity = 1 }
+public enum ImageContentKind { Photo = 0, TextOrScreenshot = 1, Auto = 2 }
+
 public sealed record ImageEncodingOptions(
     ImageOutputFormat OutputFormat,
     int Quality = 80,
-    TargetSizeOptions? TargetSize = null);
+    TargetSizeOptions? TargetSize = null,
+    CompressionPreference Preference = CompressionPreference.SizeFirst,
+    ImageContentKind ContentKind = ImageContentKind.Photo);
 
 public sealed record ImageEncodeRequest(
     string SourcePath,
@@ -172,7 +177,11 @@ public sealed record ImageEncodedOutput(
     string? TargetSizeNotice = null,
     ImageMetadataFallbackLevel MetadataFallbackLevel = ImageMetadataFallbackLevel.Full,
     string? MetadataFallbackNotice = null,
-    bool OrientationCouldNotBePreserved = false);
+    bool OrientationCouldNotBePreserved = false,
+    bool ReusedSource = false,
+    ImageContentKind? DetectedContent = null,
+    string? QualityNotice = null,
+    string? MetadataNoteNotice = null);
 
 public sealed record ImageFileProcessRequest(
     string SourcePath,
@@ -194,12 +203,18 @@ public sealed record ImageFileProcessResult(
     string? TargetSizeNotice = null,
     string? FrameNotice = null);
 
+// A null Result denotes admission/start; otherwise this is the terminal result.
+public sealed record ImageBatchItemProgress(
+    int Index,
+    ImageOperationResult<ImageFileProcessResult>? Result = null);
+
 public sealed record ImageBatchProgress(
     int Total,
     int Completed,
     int Succeeded,
     int Failed,
-    int Canceled);
+    int Canceled,
+    ImageBatchItemProgress? Item = null);
 
 public sealed record ImageBatchResult(
     IReadOnlyList<ImageOperationResult<ImageFileProcessResult>> Items,

@@ -30,7 +30,7 @@ public sealed record NanoPicSettings(
         new WatermarkSettings(false, string.Empty, "#000000", 100, "Segoe UI", 24),
         new ResizeSettings(false, 1920, 1080, PreserveAspectRatio: true),
         new GraphSettings("#FFFFFF", 100),
-        new CompressionSettings(ImageOutputFormat.Jpeg, 80, false, 200L * 1024L, false, "{name}", 1),
+        new CompressionSettings(ImageOutputFormat.Original, 80, false, 200L * 1024L, false, "{name}", 1),
         new UiSettings(string.Empty));
 }
 
@@ -41,7 +41,13 @@ public sealed record WatermarkSettings(bool Enabled, string Text, string ColorHe
     public ImageWatermarkPosition Position { get; init; } = ImageWatermarkPosition.BottomRight;
 }
 public sealed record ResizeSettings(bool Enabled, int Width, int Height, bool PreserveAspectRatio);
-public sealed record GraphSettings(string BackgroundColorHex, int BrightnessPercent);
+public sealed record GraphSettings(string BackgroundColorHex, int BrightnessPercent)
+{
+    // null preserves legacy settings that encoded the switch as percent != 100.
+    public bool? BrightnessEnabled { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsBrightnessEnabled => BrightnessEnabled ?? BrightnessPercent != 100;
+}
 public sealed record CompressionSettings(
     ImageOutputFormat OutputFormat,
     int Quality,
@@ -53,8 +59,13 @@ public sealed record CompressionSettings(
 {
     public OutputConflictPolicy ConflictPolicy { get; init; } = OutputConflictPolicy.Overwrite;
     public bool AllowResizeForTarget { get; init; } = false;
+    public CompressionPreference Preference { get; init; } = CompressionPreference.PreserveFidelity;
+    public ImageContentKind ContentKind { get; init; } = ImageContentKind.Auto;
 }
-public sealed record UiSettings(string OutputDirectory);
+public sealed record UiSettings(string OutputDirectory)
+{
+    public OutputDirectoryMode OutputMode { get; init; } = OutputDirectoryMode.SeparateDirectory;
+}
 public sealed record ProcessingSettings(bool AutoOrient, bool StripMetadata)
 {
     public static ProcessingSettings Default { get; } = new(AutoOrient: true, StripMetadata: false);
@@ -229,6 +240,9 @@ public sealed class JsonSettingsStore
         var graph = settings.Graph ?? defaults.Graph;
         var compress = settings.Compress ?? defaults.Compress;
         var ui = settings.Ui ?? defaults.Ui;
+        // Replacing originals must be an explicit choice in each app session.
+        // Non-destructive folder/grouping choices are remembered normally.
+        if (ui.OutputMode == OutputDirectoryMode.SourceDirectory) ui = ui with { OutputMode = OutputDirectoryMode.SeparateDirectory };
         var processing = settings.Processing ?? defaults.Processing;
         var note = settings.MetadataNote ?? defaults.MetadataNote;
 
@@ -328,7 +342,10 @@ public static class SettingsValidator
             settings.Watermark.FontSize is < 4 or > 256 || settings.Watermark.Margin is < 0 or > 4096 ||
             settings.OversizedImage.SoftMaxPixels < OversizedImageSettings.MinSoftMaxPixels ||
             settings.OversizedImage.SoftMaxPixels > OversizedImageSettings.MaxSoftMaxPixels ||
+            !Enum.IsDefined(typeof(OutputDirectoryMode), settings.Ui.OutputMode) ||
             !Enum.IsDefined(typeof(OutputConflictPolicy), settings.Compress.ConflictPolicy) ||
+            !Enum.IsDefined(typeof(CompressionPreference), settings.Compress.Preference) ||
+            !Enum.IsDefined(typeof(ImageContentKind), settings.Compress.ContentKind) ||
             !IsRgbHex(settings.Graph.BackgroundColorHex) || !IsRgbHex(settings.Watermark.ColorHex) ||
             string.IsNullOrWhiteSpace(settings.Compress.OutputFilenameTemplate) ||
             settings.Compress.OutputFilenameTemplate.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 ||

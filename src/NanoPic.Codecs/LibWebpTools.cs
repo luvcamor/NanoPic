@@ -58,7 +58,10 @@ internal static class LibWebpTools
         string inputPath,
         string outputPath,
         int quality,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool lossless = false,
+        bool sharpYuv = false,
+        bool preserveMetadata = false)
     {
         var tools = EnsureExtracted();
         var arguments = string.Format(
@@ -67,6 +70,9 @@ internal static class LibWebpTools
             quality,
             Quote(inputPath),
             Quote(outputPath));
+        if (preserveMetadata) arguments = arguments.Replace("-metadata none", "-metadata all");
+        if (lossless) arguments = "-lossless -exact " + arguments;
+        else if (sharpYuv) arguments = "-sharp_yuv " + arguments;
         Run(tools.Cwebp, arguments, cancellationToken, "libwebp 无法编码 WebP 图像。");
     }
 

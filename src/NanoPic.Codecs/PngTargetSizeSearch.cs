@@ -98,6 +98,9 @@ public static class PngTargetSizeSearch
                     var bytes = await encodeRunner(currentFrames, temporaryOutputPath, q, cancellationToken).ConfigureAwait(false);
                     evaluated[q] = bytes;
                     candidates.Add(new PngTargetCandidate(q, bytes, q < 100));
+                    // Descending quality: lower candidates cannot improve a match.
+                    // Still refine the gap above it; PNG sizes need not be monotonic.
+                    if (bytes <= targetOptions.TargetBytes) break;
                 }
             }
 
@@ -168,20 +171,20 @@ public static class PngTargetSizeSearch
             // 当前尺寸下所有候选均 > TargetBytes
             var smallestCandidate = candidates.OrderBy(c => c.Bytes).First();
 
-            // 若用户不允许缩小尺寸 (AllowResizeForTarget == false)
-            if (!targetOptions.AllowResizeForTarget)
+            // 不允许缩小尺寸或已用完尝试次数时，返回当前已编码的候选。
+            if (!targetOptions.AllowResizeForTarget || pass + 1 == maxResizePasses)
             {
                 if (targetOptions.AllowExceed)
                 {
-                    // 允许超出：输出原尺寸最小体积候选
+                    // 允许超出：输出当前尺寸最小体积候选
                     return ImageOperationResult<PngTargetSearchResult>.Success(new PngTargetSearchResult(
                         smallestCandidate,
                         TargetReached: false,
                         ExceededTarget: true,
-                        Resized: false,
+                        Resized: resized,
                         FinalWidth: currentWidth,
                         FinalHeight: currentHeight,
-                        Notice: null,
+                        Notice: resized ? $"为接近目标大小已调整分辨率: {originalWidth}×{originalHeight} → {currentWidth}×{currentHeight}" : null,
                         FinalFrames: currentFrames));
                 }
 
