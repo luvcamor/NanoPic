@@ -58,9 +58,11 @@ public static class PngQuantizer
         BitmapSource source,
         int quality,
         CancellationToken cancellationToken,
-        out PngQuantizationInfo info)
+        out PngQuantizationInfo info,
+        int maximumPaletteSize = 256)
     {
         if (source is null) throw new ArgumentNullException(nameof(source));
+        if (maximumPaletteSize is < 16 or > 256) throw new ArgumentOutOfRangeException(nameof(maximumPaletteSize));
         if (source.PixelWidth <= 0 || source.PixelHeight <= 0)
         {
             throw new ArgumentException("图像尺寸必须大于0。", nameof(source));
@@ -85,6 +87,8 @@ public static class PngQuantizer
         // 阶段 1：精确颜色统计与快速路径
         var exactColors = new Dictionary<int, int>(capacity: Math.Min(1024, width * height));
         var hasTransparentPixel = false;
+        var exactPathChangedPixels = source.Format.BitsPerPixel > 32 || source.Format == PixelFormats.Gray16 ||
+            source.Format == PixelFormats.Gray32Float || source.Format == PixelFormats.Bgr101010 || source.Format == PixelFormats.Cmyk32;
 
         for (var offset = 0; offset < totalBytes; offset += 4)
         {
@@ -97,6 +101,7 @@ public static class PngQuantizer
             if (a == 0)
             {
                 hasTransparentPixel = true;
+                exactPathChangedPixels |= b != 0 || g != 0 || r != 0;
                 b = 0;
                 g = 0;
                 r = 0;
@@ -127,8 +132,16 @@ public static class PngQuantizer
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Q100 must preserve the original bit depth and hidden RGB, not return
+        // the BGRA8 scan buffer or canonicalize fully transparent pixels.
+        if (quality >= 100)
+        {
+            info = new PngQuantizationInfo(false, 0, false, exactColors.Count);
+            return source;
+        }
+
         // 若全图唯一颜色 <= 256：无损 Palette 快速路径
-        if (exactColors.Count <= 256)
+        if (exactColors.Count <= maximumPaletteSize)
         {
             var paletteColors = BuildDeterministicExactPalette(exactColors.Keys, hasTransparentPixel);
             var palette = new BitmapPalette(paletteColors);
@@ -177,27 +190,16 @@ public static class PngQuantizer
             indexedSource.Freeze();
 
             info = new PngQuantizationInfo(
-                WasLossy: false,
+                WasLossy: exactPathChangedPixels,
                 PaletteSize: paletteColors.Count,
                 UsedDithering: false,
                 UniqueColorCount: paletteColors.Count);
             return indexedSource;
         }
 
-        // Quality 100 且颜色数 > 256：保持完全无损（不进行有损量化）
-        if (quality >= 100)
-        {
-            info = new PngQuantizationInfo(
-                WasLossy: false,
-                PaletteSize: 0,
-                UsedDithering: false,
-                UniqueColorCount: exactColors.Count);
-            return converted;
-        }
-
         // 阶段 2：有损调色板量化
         var policy = PngCompressionPolicy.GetParameters(quality);
-        var targetColors = Math.Min(policy.MaxColors, 256);
+        var targetColors = Math.Min(policy.MaxColors, maximumPaletteSize);
 
         var paletteList = BuildQuantizedPalette(
             pixelBuffer,

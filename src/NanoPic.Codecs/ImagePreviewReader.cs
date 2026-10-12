@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -53,6 +54,8 @@ public static class ImagePreviewReader
                 format = detected.Value;
                 var probe = ImageDimensionProbe.Probe(input, format);
                 if (!probe.IsSuccess || probe.Value is null) return new ImageOperationResult<ImagePreview>(default, probe.Failure);
+                var memoryFailure = ImageDecodeBudget.Validate(probe.Value.Width, probe.Value.Height, probe.Value.FrameCount ?? 1);
+                if (memoryFailure is not null) return new ImageOperationResult<ImagePreview>(default, memoryFailure);
                 var metadata = new ImageMetadata(format, probe.Value.Width, probe.Value.Height, probe.Value.FrameCount ?? 1, false, bytes);
                 var safety = ImageSafetyValidator.ValidateWithAction(metadata, limits);
                 if (safety.Action != SafetyAction.Pass)
@@ -67,7 +70,13 @@ public static class ImagePreviewReader
             using var stream = File.OpenRead(path);
             var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnDemand);
             if (decoder.Frames.Count == 0) return ImageOperationResult<ImagePreview>.Failed(ImageFailureKind.DecodeFailed, "图片中没有可预览的画面。");
-            var frame = format == ImageFormat.Webp ? WebpColorProfile.Attach(decoder.Frames[0], originalPath, token) : decoder.Frames[0];
+            var frame = format switch
+            {
+                ImageFormat.Webp => WebpColorProfile.Attach(decoder.Frames[0], originalPath, token),
+                ImageFormat.Ico => decoder.Frames.OrderByDescending(f => (long)f.PixelWidth * f.PixelHeight).First(),
+                ImageFormat.Gif => GifAnimation.Read(originalPath, limits, token).Coalesce(decoder.Frames, limits, token, firstFrameOnly: true)[0],
+                _ => decoder.Frames[0]
+            };
             var post = ImageSafetyValidator.ValidateWithAction(new ImageMetadata(format, frame.PixelWidth,
                 frame.PixelHeight, decoder.Frames.Count, false, bytes), limits);
             if (post.Action != SafetyAction.Pass || (long)frame.PixelWidth * frame.PixelHeight * frame.Format.BitsPerPixel > 256L * 1024 * 1024 * 8)

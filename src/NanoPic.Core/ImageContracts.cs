@@ -181,7 +181,8 @@ public sealed record ImageEncodedOutput(
     bool ReusedSource = false,
     ImageContentKind? DetectedContent = null,
     string? QualityNotice = null,
-    string? MetadataNoteNotice = null);
+    string? MetadataNoteNotice = null,
+    bool SourceAuxiliaryImagesDiscarded = false);
 
 public sealed record ImageFileProcessRequest(
     string SourcePath,

@@ -19,15 +19,17 @@ public sealed class WicImageCodec : IImageCodec
 {
     private readonly Action<ImageMetadataFallbackLevel>? _beforeMetadataAttempt;
     private readonly Action<int>? _onVisualCheck;
+    private readonly Action<int>? _onCandidateEncoded;
 
     public WicImageCodec()
     {
     }
 
-    internal WicImageCodec(Action<ImageMetadataFallbackLevel> beforeMetadataAttempt, Action<int>? onVisualCheck = null)
+    internal WicImageCodec(Action<ImageMetadataFallbackLevel> beforeMetadataAttempt, Action<int>? onVisualCheck = null, Action<int>? onCandidateEncoded = null)
     {
         _beforeMetadataAttempt = beforeMetadataAttempt ?? throw new ArgumentNullException(nameof(beforeMetadataAttempt));
         _onVisualCheck = onVisualCheck;
+        _onCandidateEncoded = onCandidateEncoded;
     }
 
     private sealed record FramePreparationResult(
@@ -90,6 +92,16 @@ public sealed class WicImageCodec : IImageCodec
 
         try
         {
+            if (input.CanSeek)
+            {
+                var header = ImageDimensionProbe.Probe(input, signature.Value);
+                if (header.IsSuccess && header.Value is { } dimensions)
+                {
+                    var memoryFailure = ImageDecodeBudget.Validate(dimensions.Width, dimensions.Height, dimensions.FrameCount ?? 1);
+                    if (memoryFailure is not null)
+                        return new ImageOperationResult<CoreImageMetadata>(default, memoryFailure);
+                }
+            }
             if (signature.Value == ImageFormat.Webp)
             {
                 return await Task.Run(
@@ -160,9 +172,20 @@ public sealed class WicImageCodec : IImageCodec
                 var decoder = BitmapDecoder.Create(
                     input,
                     BitmapCreateOptions.PreservePixelFormat,
-                    BitmapCacheOption.OnLoad);
-                return ImageOperationResult<CoreImageMetadata>.Success(
-                    CreateMetadata(decoder.Frames, format, sourceBytes));
+                    BitmapCacheOption.OnDemand);
+                if (decoder.Frames.Count == 0)
+                    return ImageOperationResult<CoreImageMetadata>.Failed(ImageFailureKind.DecodeFailed, "图像不包含可处理的帧。");
+                var frame = decoder.Frames.OrderByDescending(f => (long)f.PixelWidth * f.PixelHeight).First();
+                var memoryFailure = ImageDecodeBudget.Validate(frame.PixelWidth, frame.PixelHeight, decoder.Frames.Count, decodedBitsPerPixel: decoder.Frames.Max(f => f.Format.BitsPerPixel));
+                if (memoryFailure is not null) return new ImageOperationResult<CoreImageMetadata>(default, memoryFailure);
+                var metadata = CreateMetadata(decoder.Frames, format, sourceBytes);
+                if (format == ImageFormat.Gif)
+                {
+                    var header = ImageDimensionProbe.Probe(input, format);
+                    if (header.IsSuccess && header.Value is { } canvas)
+                        metadata = metadata with { Width = canvas.Width, Height = canvas.Height };
+                }
+                return ImageOperationResult<CoreImageMetadata>.Success(metadata);
             }, cancellationToken);
 
     private static async Task<MemoryStream> CreateSnapshotAsync(
@@ -227,13 +250,32 @@ public sealed class WicImageCodec : IImageCodec
             return await Task.Run(async () =>
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                using (var inputHeader = File.OpenRead(request.SourcePath))
+                {
+                    var header = ImageDimensionProbe.Probe(inputHeader, request.SourceFormat);
+                    if (header.IsSuccess && header.Value is { } dimensions)
+                    {
+                        var memoryFailure = ImageDecodeBudget.Validate(dimensions.Width, dimensions.Height, dimensions.FrameCount ?? 1);
+                        if (memoryFailure is not null)
+                            return new ImageOperationResult<ImageEncodedOutput>(default, memoryFailure);
+                    }
+                }
+                var hasMultiPictureIndex = request.SourceFormat == ImageFormat.Jpeg && JpegMultiPicture.HasIndex(request.SourcePath, cancellationToken);
                 IReadOnlyList<BitmapFrame> sourceFrames;
+                GifAnimation? gifAnimation = null;
                 var decodedWebpPath = string.Empty;
                 var sourcePath = request.SourcePath;
                 try
                 {
                     if (request.SourceFormat == ImageFormat.Webp)
                     {
+                        using (var webpHeader = File.OpenRead(request.SourcePath))
+                        {
+                            WebpHeaderParser.Read(webpHeader, out var animated);
+                            if (animated)
+                                return ImageOperationResult<ImageEncodedOutput>.Failed(ImageFailureKind.UnsupportedFormat,
+                                    "暂不支持动画 WebP，请先使用支持动画的工具转换为 GIF 或逐帧图片。");
+                        }
                         decodedWebpPath = CreateTemporaryPath("decoded", ".png");
                         LibWebpTools.DecodeToPng(request.SourcePath, decodedWebpPath, cancellationToken);
                         sourcePath = decodedWebpPath;
@@ -246,11 +288,24 @@ public sealed class WicImageCodec : IImageCodec
                         FileShare.Read,
                         bufferSize: 65_536,
                         useAsync: false);
-                    var decoder = BitmapDecoder.Create(
-                        source,
-                        BitmapCreateOptions.PreservePixelFormat,
-                        BitmapCacheOption.OnLoad);
+                    // Read frame descriptors before asking WIC to materialize pixels.
+                    // TIFF headers may not expose the complete page count to the pure probe.
+                    var decoder = BitmapDecoder.Create(source, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnDemand);
+                    if (decoder.Frames.Count == 0 || decoder.Frames.Count > request.SafetyLimits.MaxFrames)
+                        return ImageOperationResult<ImageEncodedOutput>.Failed(ImageFailureKind.PixelBudgetExceeded, "图片帧数超过安全预算。");
+                    var descriptorFailure = ImageDecodeBudget.Validate(decoder.Frames.Max(f => f.PixelWidth),
+                        decoder.Frames.Max(f => f.PixelHeight), decoder.Frames.Count,
+                        decodedBitsPerPixel: decoder.Frames.Max(f => f.Format.BitsPerPixel));
+                    if (descriptorFailure is not null)
+                        return new ImageOperationResult<ImageEncodedOutput>(default, descriptorFailure);
+                    source.Position = 0;
+                    decoder = BitmapDecoder.Create(source, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
                     sourceFrames = decoder.Frames.ToArray();
+                    if (request.SourceFormat == ImageFormat.Gif)
+                    {
+                        gifAnimation = GifAnimation.Read(request.SourcePath, request.SafetyLimits, cancellationToken);
+                        sourceFrames = gifAnimation.Coalesce(sourceFrames, request.SafetyLimits, cancellationToken);
+                    }
                     if (request.SourceFormat == ImageFormat.Webp && sourceFrames.Count > 0)
                         sourceFrames = new[] { WebpColorProfile.Attach(sourceFrames[0], request.SourcePath, cancellationToken) };
                     decodeCompleted = true;
@@ -277,6 +332,11 @@ public sealed class WicImageCodec : IImageCodec
                 {
                     return new ImageOperationResult<ImageEncodedOutput>(default, safetyFailure);
                 }
+
+                // Metadata/safety considers all layers; analysis and transformations must
+                // agree on the same effective ICO layer before resolving compression policy.
+                if (request.SourceFormat == ImageFormat.Ico)
+                    sourceFrames = new[] { sourceFrames.OrderByDescending(f => (long)f.PixelWidth * f.PixelHeight).First() };
 
                 var detectedContent = requestedEncoding.ContentKind == ImageContentKind.Auto
                     ? VisualQualityProbe.Capture(sourceFrames[0], cancellationToken, applyColorProfile: false).Classify()
@@ -336,27 +396,63 @@ public sealed class WicImageCodec : IImageCodec
                 var canReuseSource = fallbackLevel == ImageMetadataFallbackLevel.Full &&
                     CanReuseSourceFile(request, preparation);
 
+                if ((request.SourceFormat is ImageFormat.Ico or ImageFormat.Gif || hasMultiPictureIndex) && request.OutputFormat == request.SourceFormat && canReuseSource &&
+                    (request.Encoding.TargetSize is null || sourceMetadata.SourceBytes <= request.Encoding.TargetSize.TargetBytes))
+                {
+                    File.Copy(request.SourcePath, request.TemporaryOutputPath, true);
+                    return ImageOperationResult<ImageEncodedOutput>.Success(new ImageEncodedOutput(
+                        sourceMetadata, 100, sourceMetadata.SourceBytes, true, false, ReusedSource: true,
+                        DetectedContent: detectedContent, MetadataNoteNotice: metadataNoteNotice,
+                        QualityNotice: hasMultiPictureIndex ? "为保留多图片/HDR辅助内容，已保留原文件。" : null));
+                }
+
+                // GIF metadata removal must not rerasterize disposal backgrounds or
+                // requantize an already exact palette. Preserve the rendering blocks.
+                if (request.SourceFormat == ImageFormat.Gif && request.OutputFormat == ImageFormat.Gif &&
+                    request.Transform.StripMetadata && !preparation.PixelsChanged && fallbackLevel == ImageMetadataFallbackLevel.Full)
+                {
+                    var strippedBytes = GifAnimation.StripMetadata(request.SourcePath, request.TemporaryOutputPath, cancellationToken);
+                    var target = request.Encoding.TargetSize;
+                    if (target is null || strippedBytes <= target.TargetBytes)
+                        return ImageOperationResult<ImageEncodedOutput>.Success(new ImageEncodedOutput(
+                            sourceMetadata with { SourceBytes = strippedBytes }, 100, strippedBytes, true, false,
+                            DetectedContent: detectedContent, MetadataNoteNotice: metadataNoteNotice));
+                }
+                if (gifAnimation?.RequiresOriginalFrameData == true && request.OutputFormat is ImageFormat.Gif or ImageFormat.Tiff)
+                    return ImageOperationResult<ImageEncodedOutput>.Failed(ImageFailureKind.UnsupportedFormat,
+                        "此 GIF 的透明背景与帧恢复方式无法可靠重绘。可保持原格式且不编辑像素（允许清理元数据），或另存为静态图片；未保存结果。");
+
                 var checkVisualQuality = request.Encoding.Preference == CompressionPreference.PreserveFidelity &&
                     (request.OutputFormat == ImageFormat.Jpeg ||
                      (request.OutputFormat == ImageFormat.Webp && !ImageCompressionPolicy.UsesLosslessWebp(request.Encoding)));
                 BitmapFrame? referenceFrame = null;
                 VisualQualityProbe? referenceProbe = null;
                 string? qualityNotice = null;
+                var qualityReferenceUnavailable = false;
                 bool CheckVisualQuality()
                 {
                     if (!checkVisualQuality) return true;
                     if (visualChecksRemaining == 0) return false;
                     visualChecksRemaining--;
-                    _onVisualCheck?.Invoke(3 - visualChecksRemaining);
-                    if (!ReferenceEquals(referenceFrame, outputFrames[0]))
+                    try
                     {
-                        referenceFrame = outputFrames[0];
-                        referenceProbe = VisualQualityProbe.Capture(referenceFrame, cancellationToken);
+                        _onVisualCheck?.Invoke(3 - visualChecksRemaining);
+                        if (!ReferenceEquals(referenceFrame, outputFrames[0]))
+                        {
+                            referenceFrame = outputFrames[0];
+                            referenceProbe = VisualQualityProbe.Capture(referenceFrame, cancellationToken);
+                        }
+                        var score = InspectEncodedQuality(request.TemporaryOutputPath, request.OutputFormat,
+                            referenceProbe!, detectedContent, cancellationToken);
+                        qualityNotice = score.Accepted ? "已抽查细节；可双击查看前后对比。" : null;
+                        return score.Accepted;
                     }
-                    var score = InspectEncodedQuality(request.TemporaryOutputPath, request.OutputFormat,
-                        referenceProbe!, detectedContent, cancellationToken);
-                    qualityNotice = score.Accepted ? "已抽查细节；可双击查看前后对比。" : null;
-                    return score.Accepted;
+                    catch (FileFormatException)
+                    {
+                        // An unconvertible ICC profile is not proof of acceptable quality.
+                        qualityReferenceUnavailable = true;
+                        return false;
+                    }
                 }
                 ImageOperationResult<ImageEncodedOutput> RejectVisualLoss()
                 {
@@ -370,11 +466,13 @@ public sealed class WicImageCodec : IImageCodec
                         return ImageOperationResult<ImageEncodedOutput>.Success(new ImageEncodedOutput(
                             outputMetadata with { SourceBytes = sourceBytes }, 100, sourceBytes,
                             target is null || sourceBytes <= target.TargetBytes, target is not null && sourceBytes > target.TargetBytes,
-                            ReusedSource: true, DetectedContent: detectedContent, QualityNotice: "为保留细节，已保留原图。", MetadataNoteNotice: metadataNoteNotice));
+                            ReusedSource: true, DetectedContent: detectedContent, QualityNotice: qualityReferenceUnavailable ? "无法完成色彩/画质校验，已保留原图。" : "为保留细节，已保留原图。", MetadataNoteNotice: metadataNoteNotice));
                     }
                     return ImageOperationResult<ImageEncodedOutput>.Failed(
                         request.Encoding.TargetSize is null ? ImageFailureKind.EncodeFailed : ImageFailureKind.TargetSizeUnreachable,
-                        "这次压缩会损失较多细节，未保存结果。请提高文件大小、改用 PNG，或选择“文件更小”。");
+                        qualityReferenceUnavailable
+                            ? "无法完成图片色彩/画质校验，未保存结果。请检查 ICC 色彩配置，或另存为兼容的图片后重试。"
+                            : "这次压缩会损失较多细节，未保存结果。请提高文件大小、改用 PNG，或选择“文件更小”。");
                 }
 
                 if (request.Encoding.TargetSize is { } targetSize)
@@ -489,6 +587,19 @@ public sealed class WicImageCodec : IImageCodec
                         for (var pass = 0; pass < maxAdaptivePasses; pass++)
                         {
                             cancellationToken.ThrowIfCancellationRequested();
+                            using var candidates = new TargetEncodingCache();
+                            long Measure(int quality)
+                            {
+                                cancellationToken.ThrowIfCancellationRequested();
+                                return candidates.Measure(quality, path =>
+                                {
+                                    var preparedPng = request.OutputFormat == ImageFormat.Webp
+                                        ? candidates.PreparedInput(p => WriteWic(outputFrames, p, ImageFormat.Png, 100)) : null;
+                                    _onCandidateEncoded?.Invoke(quality);
+                                    Write(outputFrames, path, request.OutputFormat, quality, cancellationToken,
+                                        request.Encoding, !request.Transform.StripMetadata, preserveColorContexts, preparedPng);
+                                });
+                            }
                             TargetSizeSearchResult measured;
                             if (formatSupportsQuality)
                             {
@@ -498,9 +609,7 @@ public sealed class WicImageCodec : IImageCodec
                                     (quality, token) =>
                                     {
                                         token.ThrowIfCancellationRequested();
-                                        Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, quality, token,
-                                            request.Encoding, !request.Transform.StripMetadata, preserveColorContexts);
-                                        return Task.FromResult(ImageOperationResult<long>.Success(new FileInfo(request.TemporaryOutputPath).Length));
+                                        return Task.FromResult(ImageOperationResult<long>.Success(Measure(quality)));
                                     }, cancellationToken).ConfigureAwait(false);
                                 if (!search.IsSuccess || search.Value is null)
                                     return new ImageOperationResult<ImageEncodedOutput>(default, search.Failure);
@@ -508,23 +617,20 @@ public sealed class WicImageCodec : IImageCodec
                             }
                             else
                             {
-                                Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, effectiveQuality, cancellationToken,
-                                    request.Encoding, !request.Transform.StripMetadata, preserveColorContexts);
-                                var currentBytes = new FileInfo(request.TemporaryOutputPath).Length;
+                                var currentBytes = Measure(effectiveQuality);
                                 measured = new TargetSizeSearchResult(new TargetSizeCandidate(effectiveQuality, currentBytes),
                                     currentBytes <= targetSize.TargetBytes, currentBytes > targetSize.TargetBytes, Array.Empty<TargetSizeCandidate>());
                             }
                             bool CheckSelected()
                             {
-                                Write(outputFrames, request.TemporaryOutputPath, request.OutputFormat, measured.Selected.Quality, cancellationToken,
-                                    request.Encoding, !request.Transform.StripMetadata, preserveColorContexts);
+                                candidates.Select(measured.Selected.Quality, request.TemporaryOutputPath);
                                 return CheckVisualQuality();
                             }
                             if (measured.TargetReached)
                             {
                                 if (!CheckSelected())
                                 {
-                                    if (visualChecksRemaining == 0 || measured.Selected.Quality >= searchOptions.MaxQuality || pass + 1 == maxAdaptivePasses)
+                                    if (qualityReferenceUnavailable || visualChecksRemaining == 0 || measured.Selected.Quality >= searchOptions.MaxQuality || pass + 1 == maxAdaptivePasses)
                                         return RejectVisualLoss();
                                     searchOptions = searchOptions with { MinQuality = Math.Min(searchOptions.MaxQuality, measured.Selected.Quality + 5) };
                                     continue;
@@ -547,7 +653,7 @@ public sealed class WicImageCodec : IImageCodec
                                 {
                                     if (!CheckSelected())
                                     {
-                                        if (visualChecksRemaining == 0 || measured.Selected.Quality >= searchOptions.MaxQuality || pass + 1 == maxAdaptivePasses)
+                                        if (qualityReferenceUnavailable || visualChecksRemaining == 0 || measured.Selected.Quality >= searchOptions.MaxQuality || pass + 1 == maxAdaptivePasses)
                                             return RejectVisualLoss();
                                         searchOptions = searchOptions with { MinQuality = Math.Min(searchOptions.MaxQuality, measured.Selected.Quality + 5) };
                                         continue;
@@ -591,7 +697,7 @@ public sealed class WicImageCodec : IImageCodec
                         if (canReuseSource && !targetSizeResized && new FileInfo(request.TemporaryOutputPath).Length >= new FileInfo(request.SourcePath).Length)
                             break;
                         if (CheckVisualQuality()) break;
-                        if (visualChecksRemaining == 0 || effectiveQuality == 100) return RejectVisualLoss();
+                        if (qualityReferenceUnavailable || visualChecksRemaining == 0 || effectiveQuality == 100) return RejectVisualLoss();
                         effectiveQuality = Math.Min(100, effectiveQuality + 5);
                     }
                 }
@@ -625,6 +731,11 @@ public sealed class WicImageCodec : IImageCodec
                     fallbackLevel,
                     preparation.OrientationCouldNotBePreserved,
                     bytes >= new FileInfo(request.SourcePath).Length);
+                if (hasMultiPictureIndex && !reusedSource)
+                    metadataFallbackNotice = AppendNotice(metadataFallbackNotice, "源文件含多图片/HDR扩展，本次仅输出主图；未保留辅助图像及其索引。");
+                if (request.SourceFormat == ImageFormat.Gif && request.OutputFormat == ImageFormat.Gif &&
+                    !reusedSource && !request.Transform.StripMetadata)
+                    metadataFallbackNotice = AppendNotice(metadataFallbackNotice, "GIF 已重新编码并保留动画控制信息；不兼容的可选扩展未保留。");
                 return ImageOperationResult<ImageEncodedOutput>.Success(
                     new ImageEncodedOutput(
                         outputMetadata with { SourceBytes = bytes },
@@ -640,7 +751,8 @@ public sealed class WicImageCodec : IImageCodec
                         reusedSource,
                         detectedContent,
                         reusedSource ? null : qualityNotice,
-                        metadataNoteNotice));
+                        metadataNoteNotice,
+                        SourceAuxiliaryImagesDiscarded: hasMultiPictureIndex && !reusedSource));
                     }
                     catch (Exception exception) when (
                         TryGetMetadataAttemptException(exception, out var fallbackException))
@@ -662,14 +774,14 @@ public sealed class WicImageCodec : IImageCodec
 
                 var fallbackAggregate = new AggregateException(
                     fallbackLevels.Count > 1
-                        ? "所有 JPEG 元数据降级编码尝试均失败。"
+                        ? "所有 图片元数据降级编码尝试均失败。"
                         : "图像编码尝试失败。",
                     fallbackFailures);
                 fallbackAggregate.Data["NanoPic.SafeDiagnostic"] = string.Join(";", fallbackDiagnostics);
                 return ImageOperationResult<ImageEncodedOutput>.Failed(
                     ImageFailureKind.EncodeFailed,
                     fallbackLevels.Count > 1
-                        ? "JPEG 编码失败，无法安全处理图片元数据。"
+                        ? "编码失败，无法安全处理图片元数据。"
                         : "WIC 无法完成图像编码。",
                     fallbackAggregate);
             }, cancellationToken).ConfigureAwait(false);
@@ -765,7 +877,7 @@ public sealed class WicImageCodec : IImageCodec
         {
             ImageMetadataFallbackLevel.Full
         };
-        if (request.SourceFormat != ImageFormat.Jpeg || request.Transform.StripMetadata)
+        if (request.SourceFormat is not (ImageFormat.Jpeg or ImageFormat.Png or ImageFormat.Tiff) || request.Transform.StripMetadata)
         {
             return levels;
         }
@@ -1003,6 +1115,8 @@ public sealed class WicImageCodec : IImageCodec
             {
                 throw new MetadataCloneException(exception);
             }
+            if (sourceFormat == ImageFormat.Gif && outputFormat == ImageFormat.Gif)
+                metadata = GifAnimation.PreserveTiming(source.Metadata as BitmapMetadata, metadata);
             metadata = ApplyMetadataNote(metadata, sourceFormat, outputFormat, transform.MetadataNote);
             var preserveThumbnail = preserveSourceMetadata &&
                 fallbackLevel == ImageMetadataFallbackLevel.Full &&
@@ -1028,7 +1142,7 @@ public sealed class WicImageCodec : IImageCodec
             anyPixelsChanged |= pixelsChanged;
         }
 
-        IReadOnlyList<BitmapFrame> finalFrames = result;
+        IReadOnlyList<BitmapFrame> finalFrames = outputFormat == ImageFormat.Gif ? GifAnimation.NormalizeCanvas(result) : result;
         if (outputFormat == ImageFormat.Ico)
         {
             var bestFrame = result.OrderByDescending(f => (long)f.PixelWidth * f.PixelHeight).FirstOrDefault() ?? result[0];
@@ -1685,7 +1799,7 @@ public sealed class WicImageCodec : IImageCodec
     }
 
     private static bool SupportsAlpha(ImageFormat format) =>
-        format is ImageFormat.Png or ImageFormat.Webp or ImageFormat.Gif or ImageFormat.Ico;
+        format is ImageFormat.Png or ImageFormat.Webp or ImageFormat.Gif or ImageFormat.Ico or ImageFormat.Tiff;
 
     private static bool CanReuseSourceFile(
         ImageEncodeRequest request,
@@ -1731,22 +1845,29 @@ public sealed class WicImageCodec : IImageCodec
         CancellationToken cancellationToken,
         ImageEncodingOptions? options = null,
         bool preserveMetadata = true,
-        bool preserveColorContexts = true)
+        bool preserveColorContexts = true,
+        string? preparedWebpSource = null)
     {
+        if (outputFormat == ImageFormat.Gif)
+        {
+            GifAnimation.Write(frames, outputPath, cancellationToken);
+            return;
+        }
         if (outputFormat == ImageFormat.Jpeg && options?.ContentKind == ImageContentKind.TextOrScreenshot)
         {
             try { Jpeg444Encoder.Write(frames[0], outputPath, quality, cancellationToken, preserveColorContexts); }
             catch (Jpeg444Encoder.MetadataException exception) when (exception.InnerException is { } inner)
             { throw new MetadataEncodingException(inner); }
+            JpegMultiPicture.RemoveStaleIndex(outputPath, cancellationToken);
             return;
         }
 
         if (outputFormat == ImageFormat.Webp)
         {
-            var pngPath = CreateTemporaryPath("webp-source", ".png");
+            var pngPath = preparedWebpSource ?? CreateTemporaryPath("webp-source", ".png");
             try
             {
-                WriteWic(frames, pngPath, ImageFormat.Png, 100);
+                if (preparedWebpSource is null) WriteWic(frames, pngPath, ImageFormat.Png, 100);
                 LibWebpTools.EncodeFromPng(pngPath, outputPath, quality, cancellationToken,
                     lossless: options is not null && ImageCompressionPolicy.UsesLosslessWebp(options),
                     sharpYuv: options?.Preference == CompressionPreference.PreserveFidelity,
@@ -1754,7 +1875,7 @@ public sealed class WicImageCodec : IImageCodec
             }
             finally
             {
-                DeleteIfExists(pngPath);
+                if (preparedWebpSource is null) DeleteIfExists(pngPath);
             }
 
             return;
@@ -1780,6 +1901,7 @@ public sealed class WicImageCodec : IImageCodec
         }
 
         WriteWic(frames, outputPath, outputFormat, quality);
+        if (outputFormat == ImageFormat.Jpeg) JpegMultiPicture.RemoveStaleIndex(outputPath, cancellationToken);
     }
 
     private static void WritePng(

@@ -71,7 +71,7 @@ public sealed class SupportedImageFileScanner
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        if (depth > options.MaxDepth || IsReparsePoint(directory))
+        if (depth > options.MaxDepth)
         {
             return;
         }
@@ -80,6 +80,7 @@ public sealed class SupportedImageFileScanner
         string[] childDirectories;
         try
         {
+            if (IsReparsePoint(directory)) return;
             var fileSystemDirectory = PortablePath.ForFileSystem(directory);
             // 目录枚举是惰性的；在 try 内物化，确保 MoveNext 阶段的权限/IO 异常也会被记录成单项问题。
             childFiles = Directory.GetFiles(fileSystemDirectory);

@@ -300,7 +300,20 @@
     </Style>
 
     <Style TargetType="Slider">
-        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="FocusVisualStyle">
+            <Setter.Value>
+                <Style TargetType="Control">
+                    <Setter Property="Template">
+                        <Setter.Value>
+                            <ControlTemplate TargetType="Control">
+                                <Rectangle Stroke="{DynamicResource {x:Static SystemColors.HighlightBrushKey}}"
+                                           StrokeThickness="2" StrokeDashArray="2 1" Margin="-3"/>
+                            </ControlTemplate>
+                        </Setter.Value>
+                    </Setter>
+                </Style>
+            </Setter.Value>
+        </Setter>
         <Setter Property="Cursor" Value="Hand"/>
         <Setter Property="Height" Value="20"/>
         <Setter Property="Template">

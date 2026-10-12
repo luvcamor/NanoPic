@@ -7,8 +7,11 @@ namespace NanoPic.Codecs;
 
 internal static class WebpHeaderParser
 {
-    public static ImageMetadata Read(Stream input)
+    public static ImageMetadata Read(Stream input) => Read(input, out _);
+
+    public static ImageMetadata Read(Stream input, out bool animated)
     {
+        animated = false;
         if (!input.CanSeek)
         {
             throw new NotSupportedException("WebP 元数据识别需要可定位的输入流。");
@@ -52,6 +55,7 @@ internal static class WebpHeaderParser
                     width = 1 + ReadUInt24(reader);
                     height = 1 + ReadUInt24(reader);
                     hasAlpha |= (flags & 0x10) != 0;
+                    animated |= (flags & 0x02) != 0;
                 }
                 else if (chunk == "VP8 " && chunkSize >= 10 && (width == 0 || height == 0))
                 {
@@ -81,9 +85,11 @@ internal static class WebpHeaderParser
                 {
                     hasAlpha = true;
                 }
+                else if (chunk == "ANIM") { animated = true; }
                 else if (chunk == "ANMF")
                 {
                     frameCount++;
+                    animated = true;
                 }
 
                 input.Position = chunkEnd + (chunkSize & 1);

@@ -151,6 +151,27 @@ public static class PngTargetSizeSearch
                     }
                 }
 
+                // PNG size is not monotonic: a failed coarse anchor can have a
+                // better reachable neighbour above it. Bound the extra work to
+                // eight quality steps; this is an approximate search, not a global optimum.
+                if (higherFailing is not null)
+                {
+                    for (var q = Math.Min(targetOptions.MaxQuality, higherFailing.Quality + 8);
+                         q > higherFailing.Quality; q--)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (evaluated.ContainsKey(q)) continue;
+                        var bytes = await encodeRunner(currentFrames, temporaryOutputPath, q, cancellationToken).ConfigureAwait(false);
+                        evaluated[q] = bytes;
+                        candidates.Add(new PngTargetCandidate(q, bytes, q < 100));
+                        if (bytes <= targetOptions.TargetBytes)
+                        {
+                            bestCandidate = new PngTargetCandidate(q, bytes, q < 100);
+                            break;
+                        }
+                    }
+                }
+
                 string? notice = null;
                 if (resized)
                 {

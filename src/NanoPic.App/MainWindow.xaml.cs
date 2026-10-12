@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -1359,6 +1359,7 @@ public partial class MainWindow : Window
                     ToolTip = hex,
                     Cursor = System.Windows.Input.Cursors.Hand
                 };
+                System.Windows.Automation.AutomationProperties.SetName(swatch, "水印颜色 " + hex);
                 var color = hex;
                 swatch.Click += (_, _) => SelectWatermarkColor(color);
                 WatermarkColorPalette.Children.Add(swatch);

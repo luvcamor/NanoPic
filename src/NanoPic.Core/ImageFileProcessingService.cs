@@ -102,6 +102,8 @@ public sealed class ImageFileProcessingService
         }
 
         var temporaryPath = string.Empty;
+        var sourceSnapshot = string.Empty;
+        ImageFileVersion? sourceVersion = null;
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -142,6 +144,10 @@ public sealed class ImageFileProcessingService
                 }
 
                 detectedFormat = detected.Value;
+                var requestedFormat = ImageFileSignatureInspector.ToImageFormat(request.Encoding.OutputFormat, detectedFormat);
+                if (request.ConflictPolicy == OutputConflictPolicy.Overwrite && requestedFormat != ImageFormat.Unknown &&
+                    ImageFileIdentity.SameFile(source, request.SourcePath, ApplyOutputExtension(request, requestedFormat)))
+                    sourceVersion = ImageFileVersion.Capture(source, request.SourcePath, cancellationToken);
 
                 // 3. 解码前纯头探测（Header Probe）
                 var probeResult = ImageDimensionProbe.Probe(source, detectedFormat);
@@ -161,6 +167,10 @@ public sealed class ImageFileProcessingService
                         SourceBytes: source.Length,
                         ExifOrientation: probeInfo.ExifOrientation);
 
+                    var memoryFailure = ImageDecodeBudget.Validate(probeInfo.Width, probeInfo.Height, probeInfo.FrameCount ?? 1);
+                    if (memoryFailure is not null)
+                        return new ImageOperationResult<ImageFileProcessResult>(default, memoryFailure);
+
                     // 4. 解码前硬/软安全判定
                     var preSafetyResult = ImageSafetyValidator.ValidateWithAction(preMetadata, request.SafetyLimits);
                     if (preSafetyResult.Action == SafetyAction.Reject)
@@ -175,6 +185,16 @@ public sealed class ImageFileProcessingService
                 if (!identified.IsSuccess || identified.Value is null)
                 {
                     return new ImageOperationResult<ImageFileProcessResult>(default, identified.Failure);
+                }
+
+                // A replacement operation encodes an immutable snapshot. The original
+                // may be edited after this stream closes; the version is checked at commit.
+                if (sourceVersion is not null)
+                {
+                    sourceSnapshot = Path.Combine(Path.GetTempPath(), "nanopic-source-" + Guid.NewGuid().ToString("N") + ".tmp");
+                    source.Position = 0;
+                    using var snapshot = new FileStream(sourceSnapshot, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                    await source.CopyToAsync(snapshot, 65_536, cancellationToken).ConfigureAwait(false);
                 }
 
                 sourceMetadata = identified.Value;
@@ -253,6 +273,15 @@ public sealed class ImageFileProcessingService
                             ResizeNotice: null));
                 }
 
+                ImageFileVersion? destinationVersion = null;
+                if (destination.Value.ReplaceExisting)
+                {
+                    var samePath = SamePath(request.SourcePath, destination.Value.Path);
+                    if (samePath && sourceVersion is null)
+                        throw new ImageFileVersionConflictException("目标在处理期间变为原图的另一个名称，已取消保存。请重新导入后重试。");
+                    destinationVersion = sourceVersion ?? ImageFileVersion.Capture(destination.Value.Path, cancellationToken);
+                }
+
                 temporaryPath = CreateTemporaryPath(destination.Value.Path);
                 var effectiveTransform = request.Transform;
                 var resizePlan = ImageResizePlanner.Plan(
@@ -275,7 +304,7 @@ public sealed class ImageFileProcessingService
                 }
 
                 var encodeRequest = new ImageEncodeRequest(
-                    PortablePath.ForFileSystem(request.SourcePath),
+                    PortablePath.ForFileSystem(string.IsNullOrEmpty(sourceSnapshot) ? request.SourcePath : sourceSnapshot),
                     PortablePath.ForFileSystem(temporaryPath),
                     detectedFormat,
                     outputFormat,
@@ -289,6 +318,11 @@ public sealed class ImageFileProcessingService
                     return new ImageOperationResult<ImageFileProcessResult>(default, encoded.Failure);
                 }
 
+                if (encoded.Value.SourceAuxiliaryImagesDiscarded &&
+                    (sourceVersion is not null || SamePath(request.SourcePath, destination.Value.Path)))
+                    return ImageOperationResult<ImageFileProcessResult>.Failed(ImageFailureKind.UnsupportedFormat,
+                        "本次处理只能输出主图，不能直接替换含多图片/HDR辅助内容的原文件。请另存到其他文件夹。");
+
                 var verified = await VerifyOutputAsync(temporaryPath, outputFormat, encoded.Value.Metadata, cancellationToken).ConfigureAwait(false);
                 if (!verified.IsSuccess)
                 {
@@ -300,14 +334,15 @@ public sealed class ImageFileProcessingService
                     temporaryPath,
                     destination.Value.Path,
                     destination.Value.ReplaceExisting,
-                    request.ConflictPolicy);
+                    request.ConflictPolicy, destinationVersion, cancellationToken);
                 temporaryPath = string.Empty;
 
                 // 仅 GIF/TIFF 输出保留多帧（见编解码器 PrepareFrames）；其余格式只编码第一帧，
                 // 必须显式告知用户发生了帧丢弃，避免静默数据丢失。
-                var frameNotice = sourceMetadata.FrameCount > 1 && outputFormat is not (ImageFormat.Gif or ImageFormat.Tiff)
-                    ? $"源文件包含 {sourceMetadata.FrameCount} 帧，输出仅保留第一帧。"
-                    : null;
+                var frameNotice = sourceMetadata.Format == ImageFormat.Ico
+                    ? outputFormat == ImageFormat.Ico ? null : "已选用图标中最大的分辨率层。"
+                    : sourceMetadata.FrameCount > 1 && outputFormat is not (ImageFormat.Gif or ImageFormat.Tiff)
+                        ? $"源文件包含 {sourceMetadata.FrameCount} 帧，输出仅保留第一帧。" : null;
 
                 return ImageOperationResult<ImageFileProcessResult>.Success(
                     new ImageFileProcessResult(
@@ -331,6 +366,10 @@ public sealed class ImageFileProcessingService
         {
             return ImageOperationResult<ImageFileProcessResult>.Failed(ImageFailureKind.TaskCanceled, "图像处理已取消。", exception);
         }
+        catch (ImageFileVersionConflictException exception)
+        {
+            return ImageOperationResult<ImageFileProcessResult>.Failed(ImageFailureKind.FileAccessConflict, exception.Message, exception);
+        }
         catch (UnauthorizedAccessException exception)
         {
             return ImageOperationResult<ImageFileProcessResult>.Failed(
@@ -348,6 +387,7 @@ public sealed class ImageFileProcessingService
         finally
         {
             DeleteIfExists(temporaryPath);
+            DeleteIfExists(sourceSnapshot);
         }
     }
 
@@ -438,17 +478,24 @@ public sealed class ImageFileProcessingService
         return ImageOperationResult<ImageMetadata>.Success(identified.Value);
     }
 
+    private static bool SamePath(string left, string right) => ImageFileIdentity.SameFile(left, right);
+
     private static string CommitTemporaryFile(
         string temporaryPath,
         string destinationPath,
         bool replaceExisting,
-        OutputConflictPolicy conflictPolicy)
+        OutputConflictPolicy conflictPolicy,
+        ImageFileVersion? expectedVersion = null, CancellationToken cancellationToken = default)
     {
         var fileSystemTemporaryPath = PortablePath.ForFileSystem(temporaryPath);
         var fileSystemDestinationPath = PortablePath.ForFileSystem(destinationPath);
+        if (replaceExisting && !File.Exists(fileSystemDestinationPath))
+            throw new ImageFileVersionConflictException("目标文件在处理期间已被移走或删除，已取消保存。");
         if (replaceExisting && File.Exists(fileSystemDestinationPath))
         {
-            File.Replace(fileSystemTemporaryPath, fileSystemDestinationPath, destinationBackupFileName: null, ignoreMetadataErrors: true);
+            if (expectedVersion is null)
+                throw new IOException("缺少目标文件版本，已停止覆盖。");
+            expectedVersion.Replace(fileSystemTemporaryPath, fileSystemDestinationPath, cancellationToken);
             return destinationPath;
         }
 
@@ -496,7 +543,7 @@ public sealed class ImageFileProcessingService
     private static string CreateTemporaryPath(string destinationPath)
     {
         var directory = Path.GetDirectoryName(destinationPath) ?? throw new InvalidOperationException("输出路径缺少目录。");
-        return Path.Combine(directory, $".{Path.GetFileName(destinationPath)}.{Guid.NewGuid():N}.tmp");
+        return Path.Combine(directory, $".nanopic-{Guid.NewGuid():N}.tmp");
     }
 
     private static string CreateAutoRenamedPath(string requestedPath)

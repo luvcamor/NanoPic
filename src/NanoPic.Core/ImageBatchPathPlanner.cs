@@ -2,9 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.InteropServices;
 using System.Threading;
-using Microsoft.Win32.SafeHandles;
 
 namespace NanoPic.Core;
 
@@ -128,22 +126,5 @@ internal static class ImageBatchPathPlanner
     { if (!owners.TryGetValue(key, out var set)) owners.Add(key, set = new HashSet<int>()); set.Add(index); }
     private static string Canonical(string path) => PortablePath.ForDisplay(Path.GetFullPath(PortablePath.ForFileSystem(PortablePath.ForDisplay(path))));
 
-    private static string? Identity(string path)
-    {
-        if (!File.Exists(PortablePath.ForFileSystem(path)) || Environment.OSVersion.Platform != PlatformID.Win32NT) return null;
-        using var stream = new FileStream(PortablePath.ForFileSystem(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-        if (!GetFileInformationByHandle(stream.SafeFileHandle, out var info))
-            throw new IOException("无法确认文件身份，已停止覆盖检查。");
-        return "file-id:" + info.Volume + ":" + info.IndexHigh + ":" + info.IndexLow;
-    }
-    [StructLayout(LayoutKind.Sequential)]
-    private struct FileIdentity
-    {
-        public uint Attributes;
-        public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
-        public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
-    }
-    [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileIdentity identity);
+    private static string? Identity(string path) => ImageFileIdentity.Get(path);
 }

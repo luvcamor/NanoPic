@@ -488,6 +488,9 @@ public sealed class ComDropTargetServer : IDisposable
     private readonly object _sync = new();
     private NanoPicDropTargetFactory? _factory;
     private IntPtr _factoryUnknown = IntPtr.Zero;
+    private readonly Func<Guid, IntPtr, (int Result, uint Cookie)> _registerClass;
+    private readonly Func<int> _resumeClass;
+    private readonly Func<uint, int> _revokeClass;
     private uint _registrationCookie;
     private bool _resumed;
 
@@ -511,8 +514,14 @@ public sealed class ComDropTargetServer : IDisposable
         Func<uint> addServerReference,
         Func<uint> releaseServerReference,
         Func<object, int> disconnectObject,
-        Action<string, Exception?>? log = null)
+        Action<string, Exception?>? log = null,
+        Func<Guid, IntPtr, (int Result, uint Cookie)>? registerClass = null,
+        Func<int>? resumeClass = null,
+        Func<uint, int>? revokeClass = null)
     {
+        _registerClass = registerClass ?? RegisterNativeClass;
+        _resumeClass = resumeClass ?? ShellComNative.CoResumeClassObjects;
+        _revokeClass = revokeClass ?? ShellComNative.CoRevokeClassObject;
         _classId = classId;
         _dropHandler = dropHandler ?? throw new ArgumentNullException(nameof(dropHandler));
         _disconnectObject = disconnectObject ?? throw new ArgumentNullException(nameof(disconnectObject));
@@ -543,13 +552,9 @@ public sealed class ComDropTargetServer : IDisposable
             // 注册线程可能是后台线程（选举线程）：先确保该线程已初始化 COM。
             // 已经是 STA 的 UI 线程会返回 RPC_E_CHANGED_MODE，忽略即可。
             ShellComNative.EnsureComInitializedMultiThreaded();
-            var classId = _classId;
-            var hresult = ShellComNative.CoRegisterClassObject(
-                ref classId,
-                _factoryUnknown,
-                ShellComNative.ClsCtxLocalServer,
-                ShellComNative.RegClsMultipleUse | ShellComNative.RegClsSuspended,
-                out _registrationCookie);
+            var registration = _registerClass(_classId, _factoryUnknown);
+            var hresult = registration.Result;
+            _registrationCookie = registration.Cookie;
             if (hresult != ShellComNative.SOk)
             {
                 _log?.Invoke($"注册 COM class object 失败（HRESULT 0x{hresult:X8}）。", null);
@@ -564,6 +569,13 @@ public sealed class ComDropTargetServer : IDisposable
         }
     }
 
+    private static (int Result, uint Cookie) RegisterNativeClass(Guid id, IntPtr factory)
+    {
+        var result = ShellComNative.CoRegisterClassObject(ref id, factory, ShellComNative.ClsCtxLocalServer,
+            ShellComNative.RegClsMultipleUse | ShellComNative.RegClsSuspended, out var cookie);
+        return (result, cookie);
+    }
+
     public bool Resume()
     {
         lock (_sync)
@@ -573,10 +585,11 @@ public sealed class ComDropTargetServer : IDisposable
                 return _resumed;
             }
 
-            var hresult = ShellComNative.CoResumeClassObjects();
+            var hresult = _resumeClass();
             if (hresult != ShellComNative.SOk)
             {
                 _log?.Invoke($"CoResumeClassObjects 失败（HRESULT 0x{hresult:X8}）。", null);
+                Revoke();
                 return false;
             }
 
@@ -591,7 +604,12 @@ public sealed class ComDropTargetServer : IDisposable
         {
             if (_registrationCookie != 0)
             {
-                ShellComNative.CoRevokeClassObject(_registrationCookie);
+                var result = _revokeClass(_registrationCookie);
+                if (result != ShellComNative.SOk)
+                {
+                    _log?.Invoke($"CoRevokeClassObject 失败（HRESULT 0x{result:X8}），保留注册状态以便重试。", null);
+                    return;
+                }
                 _registrationCookie = 0;
             }
 

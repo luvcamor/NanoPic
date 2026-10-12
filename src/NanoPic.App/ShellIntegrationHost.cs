@@ -165,7 +165,11 @@ internal sealed class ShellIntegrationHost : IDisposable
                 return;
             }
 
-            _comServer.Resume();
+            if (!_comServer.Resume())
+            {
+                _log("Explorer DropTarget 未能恢复服务，请重试右键菜单集成。", null);
+                return;
+            }
             _log("已注册 Explorer DropTarget class object。", null);
         }
     }
